@@ -34,6 +34,7 @@
 #include "alembic.h"
 #include "vmd.h"
 #include "pmx.h"
+#include "optix.h"
 #include "resource.h"
 #include "MMDExport.h"
 #include "UMStringUtil.h"
@@ -959,6 +960,7 @@ void run_python_script()
 		InitAlembic();
 		InitVMD();
 		InitPMX();
+		InitOptix();
 		PyImport_AppendInittab("mmdbridge", PyInit_mmdbridge);
 		Py_Initialize();
 			
@@ -2389,6 +2391,7 @@ bool d3d9_initialize()
 void d3d9_dispose() 
 {
 	renderData.dispose();
+	DisposeOptix();
 	DisposePMX();
 	DisposeVMD();
 	DisposeAlembic();

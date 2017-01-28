@@ -39,6 +39,15 @@
     <ClInclude Include="..\..\src\d3d9\pmx.h">
       <Filter>src</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\src\d3d9\optix.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\d3d9\stb_image.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\d3d9\stb_image_write.h">
+      <Filter>src</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\src\d3d9\d3d9.cpp">
@@ -54,6 +63,9 @@
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="..\..\src\d3d9\pmx.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\d3d9\optix.cpp">
       <Filter>src</Filter>
     </ClCompile>
   </ItemGroup>
