@@ -20,14 +20,12 @@ end_frame = get_end_frame()
 
 framenumber = get_frame_number()
 if (framenumber == start_frame):
-	messagebox("vmd export started")
+	messagebox("optix export started")
 	start_optix_export("", export_mode)
 
 if (framenumber >= start_frame or framenumber <= end_frame):
 	execute_optix_export(framenumber)
 
-"""
 if (framenumber == end_frame):
-	messagebox("vmd export ended at " + str(framenumber))
+	messagebox("optix export ended at " + str(framenumber))
 	end_optix_export()
-"""

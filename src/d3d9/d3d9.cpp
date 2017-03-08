@@ -1182,12 +1182,69 @@ static bool writeTextureToMemory(const std::string &textureName, IDirect3DTextur
 static HRESULT WINAPI beginScene(IDirect3DDevice9 *device) 
 {
 	HRESULT res = (*original_begin_scene)(device);
+
+	BridgeParameter& parameter = BridgeParameter::mutable_instance();
+	D3DVIEWPORT9 viewport;
+	device->lpVtbl->GetViewport(device, &viewport);
+	parameter.viewport_width = viewport.Width;
+	parameter.viewport_height = viewport.Height;
+
 	return res;
 }
 
 static HRESULT WINAPI endScene(IDirect3DDevice9 *device)
 {
 	HRESULT res = (*original_end_scene)(device);
+
+	BridgeParameter& parameter = BridgeParameter::mutable_instance();
+	static bool init = false;
+	//static LPDIRECT3DTEXTURE9 texture = NULL;
+	if (!init) {
+		//D3DXCreateTextureFromFile(device, _T("D:\\hoge.jpg"), &texture);
+
+		D3DXCreateTexture(device, parameter.viewport_width, parameter.viewport_height, 0
+			, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &parameter.preview_tex);
+		init = true;
+	}
+	// 頂点フォーマットの定義
+	struct  VTX
+	{
+		float       x, y, z;
+		float       rhw;
+		D3DCOLOR    color;
+		float       tu, tv;
+	};
+	D3DVIEWPORT9 viewport;
+	device->lpVtbl->GetViewport(device, &viewport);
+
+	// 頂点を準備
+	VTX vertex[4] =
+	{
+		{ viewport.X, viewport.Y, 0, 1.0f, 0x88FFFFFF, 0, 0 },    //左上
+		{ viewport.X + viewport.Width, viewport.Y, 0, 1.0f, 0x88FFFFFF, 1, 0 },    //右上
+		{ viewport.X, viewport.Y + viewport.Height, 0, 1.0f, 0x88FFFFFF, 0, 1 },    //左下
+		{ viewport.X + viewport.Width, viewport.Y + viewport.Height, 0, 1.0f, 0x88FFFFFF, 1, 1 },    //右下
+	};
+	UINT numPass = 0;
+
+	device->lpVtbl->SetTexture(device, 0, reinterpret_cast<IDirect3DBaseTexture9*>(parameter.preview_tex));
+
+	device->lpVtbl->SetTextureStageState(device, 0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+	device->lpVtbl->SetTextureStageState(device, 0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+
+	device->lpVtbl->SetTextureStageState(device, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+
+	device->lpVtbl->SetTextureStageState(device, 0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+	device->lpVtbl->SetTextureStageState(device, 0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+
+	// 頂点フォーマットの設定
+	device->lpVtbl->SetFVF(device, D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+	// 描画処理
+
+	device->lpVtbl->SetRenderState(device, D3DRS_ZENABLE, D3DZB_FALSE);
+	device->lpVtbl->DrawPrimitiveUP(device, D3DPT_TRIANGLESTRIP, 2, vertex, sizeof(VTX));
+	device->lpVtbl->SetRenderState(device, D3DRS_ZENABLE, D3DZB_TRUE);
+
 	return res;
 
 }
@@ -1328,7 +1385,7 @@ static INT_PTR CALLBACK DialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 				{
 					SendMessage(hCombo1 , CB_ADDSTRING , 0 , (LPARAM)parameter.python_script_name_list[i].c_str());
 				}
-				SendMessage(hCombo2 , CB_ADDSTRING , 0 , (LPARAM)_T("実行する"));
+				SendMessage(hCombo2, CB_ADDSTRING, 0, (LPARAM)_T("実行する"));
 				SendMessage(hCombo2 , CB_ADDSTRING , 0 , (LPARAM)_T("実行しない"));
 				// ウインドウ生成時にはじめに表示するデータを指定
 				UINT index1 = SendMessage(hCombo1, CB_FINDSTRINGEXACT, -1, (LPARAM)parameter.python_script_name.c_str());
@@ -1414,8 +1471,9 @@ static bool IsValidCallSetting() {
 }
 
 static bool IsValidFrame() {
-	HWND recWindow = FindWindowA("RecWindow", NULL);
-	return (recWindow != NULL);
+	return true;
+	//HWND recWindow = FindWindowA("RecWindow", NULL);
+	//return (recWindow != NULL);
 }
 
 static bool IsValidTechniq() {
@@ -1601,7 +1659,7 @@ static bool writeBuffersToMemory(IDirect3DDevice9 *device)
 			device->lpVtbl->GetTransform(device ,D3DTS_WORLD, &renderedBuffer.world);
 			device->lpVtbl->GetTransform(device ,D3DTS_VIEW, &renderedBuffer.view);
 			device->lpVtbl->GetTransform(device ,D3DTS_PROJECTION, &renderedBuffer.projection);
-			
+
 			::D3DXMatrixInverse(&renderedBuffer.world_inv, NULL, &renderedBuffer.world);
 
 			int bytePos = 0;
@@ -1633,7 +1691,7 @@ static bool writeBuffersToMemory(IDirect3DDevice9 *device)
 				for (size_t i =  bytePos, n = 0; i < vit->second; i += renderData.stride, ++n)
 				{
 					D3DXVECTOR3 v;
-					memcpy(&v, &pVertexBuf[i], sizeof( D3DXVECTOR3 ));
+					memcpy(&v, &pVertexBuf[i], sizeof(D3DXVECTOR3));
 					if (renderedBuffer.isAccessory)
 					{
 						D3DXVECTOR4 dst;

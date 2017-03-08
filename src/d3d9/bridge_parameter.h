@@ -46,6 +46,10 @@ public:
 	/// テクスチャバッファが有効かどうか.
 	bool is_texture_buffer_enabled;
 
+	int viewport_width;
+	int viewport_height;
+
+
 	/// スクリプトからの一時保存値(int)
 	std::map<int, int> py_int_map;
 	/// スクリプトからの一時保存値(float)
@@ -62,6 +66,8 @@ public:
 	/// VertexBuffer, RenderedBufferが必要ない場合trueにする.
 	bool is_exporting_without_mesh;
 
+	LPDIRECT3DTEXTURE9 preview_tex;
+
 private:
 	BridgeParameter() :
 		//script_call_setting(2)
@@ -71,7 +77,10 @@ private:
 		, frame_height(450)
 		, export_fps(30.0)
 		, is_texture_buffer_enabled(false)
-		, is_exporting_without_mesh(false) {}
+		, is_exporting_without_mesh(false)
+		, preview_tex(0)
+		, viewport_width(0)
+		, viewport_height(0) {}
 	
 	static BridgeParameter parameter;
 };

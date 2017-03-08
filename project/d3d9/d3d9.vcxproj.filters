@@ -9,6 +9,9 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav</Extensions>
     </Filter>
+    <Filter Include="CUDA">
+      <UniqueIdentifier>{e2c22e87-c100-432b-b007-e84206e81292}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\src\d3d9\hook.def">
@@ -68,5 +71,22 @@
     <ClCompile Include="..\..\src\d3d9\optix.cpp">
       <Filter>src</Filter>
     </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="..\..\src\d3d9\pinhole_camera.cu">
+      <Filter>CUDA</Filter>
+    </CudaCompile>
+    <CudaCompile Include="..\..\src\d3d9\constantbg.cu">
+      <Filter>CUDA</Filter>
+    </CudaCompile>
+    <CudaCompile Include="..\..\src\d3d9\phong.cu">
+      <Filter>CUDA</Filter>
+    </CudaCompile>
+    <CudaCompile Include="..\..\src\d3d9\triangle_mesh.cu">
+      <Filter>CUDA</Filter>
+    </CudaCompile>
+    <CudaCompile Include="..\..\src\d3d9\optixPathTracer.cu">
+      <Filter>CUDA</Filter>
+    </CudaCompile>
   </ItemGroup>
 </Project>
