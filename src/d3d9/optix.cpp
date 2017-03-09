@@ -143,7 +143,7 @@ void createMaterialPrograms(
 		any_hit = context->createProgramFromPTXFile(path, "any_hit_shadow");
 }
 
-static TextureSampler loadTexture(const float3& default_color)
+static TextureSampler loadTexture(IDirect3DTexture9* texture, const float3& default_color)
 {
 	optix::TextureSampler sampler = context->createTextureSampler();
 	sampler->setWrapMode(0, RT_WRAP_REPEAT);
@@ -155,21 +155,45 @@ static TextureSampler loadTexture(const float3& default_color)
 	sampler->setMipLevelCount(1u);
 	sampler->setArraySize(1u);
 
+	D3DLOCKED_RECT lockRect;
+	if (texture && texture->lpVtbl->LockRect(texture, 0, &lockRect, NULL, D3DLOCK_READONLY) == D3D_OK) {
+		IDirect3DSurface9 *surface;
+		texture->lpVtbl->GetSurfaceLevel(texture, 0, &surface);
+		D3DSURFACE_DESC desc;
+		surface->lpVtbl->GetDesc(surface, &desc);
+		surface->lpVtbl->Release(surface);
+		const int width = desc.Width;
+		const int height = desc.Height;
 
-	optix::Buffer buffer = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_UNSIGNED_BYTE4, 1u, 1u);
-	unsigned char* buffer_data = static_cast<unsigned char*>(buffer->map());
-	buffer_data[0] = (unsigned char)clamp((int)(default_color.x * 255.0f), 0, 255);
-	buffer_data[1] = (unsigned char)clamp((int)(default_color.y * 255.0f), 0, 255);
-	buffer_data[2] = (unsigned char)clamp((int)(default_color.z * 255.0f), 0, 255);
-	buffer_data[3] = 255;
-	buffer->unmap();
+		optix::Buffer buffer = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_UNSIGNED_BYTE4, width, height);
+		unsigned char* buffer_data = static_cast<unsigned char*>(buffer->map());
 
-	sampler->setBuffer(0u, 0u, buffer);
-	// Although it would be possible to use nearest filtering here, we chose linear
-	// to be consistent with the textures that have been loaded from a file. This
-	// allows OptiX to perform some optimizations.
-	sampler->setFilteringModes(RT_FILTER_LINEAR, RT_FILTER_LINEAR, RT_FILTER_NONE);
+		unsigned char* src = reinterpret_cast<unsigned char*>(lockRect.pBits);
+		for (int y = 0; y < height; ++y) {
+			memcpy(&buffer_data[y * width * 4], src, width * 4);
+			src += lockRect.Pitch;
+		}
+		texture->lpVtbl->UnlockRect(texture, 0);
+		buffer->unmap();
 
+		sampler->setBuffer(0u, 0u, buffer);
+		sampler->setFilteringModes(RT_FILTER_LINEAR, RT_FILTER_LINEAR, RT_FILTER_NONE);
+	}
+	else {
+		optix::Buffer buffer = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_UNSIGNED_BYTE4, 1u, 1u);
+		unsigned char* buffer_data = static_cast<unsigned char*>(buffer->map());
+		buffer_data[0] = (unsigned char)clamp((int)(default_color.x * 255.0f), 0, 255);
+		buffer_data[1] = (unsigned char)clamp((int)(default_color.y * 255.0f), 0, 255);
+		buffer_data[2] = (unsigned char)clamp((int)(default_color.z * 255.0f), 0, 255);
+		buffer_data[3] = 255;
+		buffer->unmap();
+
+		sampler->setBuffer(0u, 0u, buffer);
+		// Although it would be possible to use nearest filtering here, we chose linear
+		// to be consistent with the textures that have been loaded from a file. This
+		// allows OptiX to perform some optimizations.
+		sampler->setFilteringModes(RT_FILTER_LINEAR, RT_FILTER_LINEAR, RT_FILTER_NONE);
+	}
 
 	return  sampler;
 }
@@ -186,22 +210,22 @@ optix::Material createOptiXMaterial(
 	mat->setClosestHitProgram(0u, closest_hit);
 	mat->setAnyHitProgram(1u, any_hit);
 
-	//if (use_textures)
-	//	mat["Kd_map"]->setTextureSampler(loadTexture(mat_params.Kd_map, optix::make_float3(mat_params.Kd)));
-	//else
-	mat["Kd_map"]->setTextureSampler(loadTexture(optix::make_float3(0.7f, 0.7f, 0.7f)));
+	if (use_textures) {
+		mat["Kd_map"]->setTextureSampler(loadTexture(material->tex, optix::make_float3(0.7f, 0.7f, 0.7f)));
+	} else {
+		mat["Kd_map"]->setTextureSampler(loadTexture(NULL, optix::make_float3(0.7f, 0.7f, 0.7f)));
+	}
 
 	mat["Kd_mapped"]->setInt(use_textures);
 	const float diffuse[] = {
-		0.7f, 0.7f, 0.7f
-		//material->diffuse.x,
-		//material->diffuse.y,
-		//material->diffuse.z
+		material->diffuse.z,
+		material->diffuse.y,
+		material->diffuse.x
 	};
 	const float specular[] = {
-		material->specular.x,
+		material->specular.z,
 		material->specular.y,
-		material->specular.z
+		material->specular.x
 	};
 	mat["Kd"]->set3fv(diffuse);
 	mat["Ks"]->set3fv(specular);
@@ -379,8 +403,11 @@ static GeometryInstance createMMDMesh(const RenderedBuffer & renderedBuffer, int
 	optix::Buffer optix_texcoords = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT2, uvList.empty() ? 0 : uvList.size());
 	std::vector<optix::Material> optix_materials;
 
+	optix::Program tex_closest_hit;
+	optix::Program tex_any_hit;
 	optix::Program closest_hit;
 	optix::Program any_hit;
+	createMaterialPrograms(context, true, tex_closest_hit, tex_any_hit);
 	createMaterialPrograms(context, false, closest_hit, any_hit);
 
 	// indices
@@ -390,19 +417,21 @@ static GeometryInstance createMMDMesh(const RenderedBuffer & renderedBuffer, int
 	for (int k = 0, ksize = static_cast<int>(renderedBuffer.materials.size()); k < ksize; ++k)
 	{
 		RenderedMaterial* material = renderedBuffer.materials.at(k);
+		const bool use_texture = !material->memoryTexture.empty();
+
 		for (int n = 0; n < material->surface.faces.size(); ++n)
 		{
-			mat_indices[index] = 0;
+			mat_indices[index] = optix_materials.size();
 			UMVec3i face = material->surface.faces[n];
 			indices[index] = UMVec3i(face.x - 1, face.y - 1, face.z - 1);
 			index++;
 		};
 		optix_materials.push_back(createOptiXMaterial(
 			context,
-			closest_hit,
-			any_hit,
+			use_texture ? tex_closest_hit : closest_hit,
+			use_texture ? tex_any_hit : any_hit,
 			material,
-			false));
+			use_texture));
 	}
 
 	UMBox box;
@@ -754,10 +783,6 @@ static void updateCamera(const RenderedBuffer & renderedBuffer, int currentframe
 	const float fov = umbase::um_to_degree(v.x);
 	const float aspect_ratio = v.y;
 
-	//const float fov = 35.0f;
-	//const float aspect_ratio = static_cast<float>(width) /
-	//	static_cast<float>(height);
-
 	D3DXVECTOR3 eye;
 	UMGetCameraEye(&eye);
 	d3d_vector3_transform(eye, eye, renderedBuffer.world_inv);
@@ -779,8 +804,6 @@ static void updateCamera(const RenderedBuffer & renderedBuffer, int currentframe
 	calculateCameraVariables(
 		camera_eye, camera_lookat, camera_up, fov, aspect_ratio,
 		camera_u, camera_v, camera_w, /*fov_is_vertical*/ true);
-
-	camera_rotate = Matrix4x4::identity();
 
 	context["frame_number"]->setUint(currentframe);
 	context["eye"]->setFloat(camera_eye);
@@ -910,15 +933,29 @@ static void end_optix_export()
 
 void DisposeOptix()
 {
+	if (context)
+	{
+		context->destroy();
+		context = 0;
+	}
 }
 
+void StartOptix(int currentframe)
+{
+	start_optix_export("", currentframe);
+}
+
+void UpdateOptix(int currentframe)
+{
+	execute_optix_export(currentframe);
+}
 // ---------------------------------------------------------------------------
 BOOST_PYTHON_MODULE(mmdbridge_optix)
 {
 	using namespace boost::python;
 	def("start_optix_export", start_optix_export);
 	def("execute_optix_export", execute_optix_export);
-	def("end_optix_export", DisposeOptix);
+	def("end_optix_export", end_optix_export);
 }
 
 #endif //WITH_OPTIX

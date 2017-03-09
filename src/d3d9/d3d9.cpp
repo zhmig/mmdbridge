@@ -1220,10 +1220,10 @@ static HRESULT WINAPI endScene(IDirect3DDevice9 *device)
 	// 頂点を準備
 	VTX vertex[4] =
 	{
-		{ viewport.X, viewport.Y, 0, 1.0f, 0x88FFFFFF, 0, 0 },    //左上
-		{ viewport.X + viewport.Width, viewport.Y, 0, 1.0f, 0x88FFFFFF, 1, 0 },    //右上
-		{ viewport.X, viewport.Y + viewport.Height, 0, 1.0f, 0x88FFFFFF, 0, 1 },    //左下
-		{ viewport.X + viewport.Width, viewport.Y + viewport.Height, 0, 1.0f, 0x88FFFFFF, 1, 1 },    //右下
+		{ viewport.X, viewport.Y, 0, 1.0f, 0xFFFFFFFF, 0, 0 },    //左上
+		{ viewport.X + viewport.Width, viewport.Y, 0, 1.0f, 0xFFFFFFFF, 1, 0 },    //右上
+		{ viewport.X, viewport.Y + viewport.Height, 0, 1.0f, 0xFFFFFFFF, 0, 1 },    //左下
+		{ viewport.X + viewport.Width, viewport.Y + viewport.Height, 0, 1.0f, 0xFFFFFFFF, 1, 1 },    //右下
 	};
 	UINT numPass = 0;
 
@@ -1476,6 +1476,11 @@ static bool IsValidFrame() {
 	//return (recWindow != NULL);
 }
 
+static int pre_buffer_size = 0;
+static D3DXMATRIX pre_world;
+static D3DXVECTOR3 pre_eye;
+static D3DXVECTOR4 pre_fov;
+
 static bool IsValidTechniq() {
 	const int technic = ExpGetCurrentTechnic();
 	return (technic == 0 || technic == 1 || technic == 2);
@@ -1506,6 +1511,24 @@ static HRESULT WINAPI present(
 		{
 			const BridgeParameter& parameter = BridgeParameter::instance();
 			int frame = static_cast<int>(time * BridgeParameter::instance().export_fps + 0.5f);
+			if (pre_buffer_size != get_vertex_buffer_size()) {
+				DisposeOptix();
+				StartOptix(frame);
+				pre_buffer_size = get_vertex_buffer_size();
+			}
+			D3DXMATRIX world = BridgeParameter::mutable_instance().first_noaccessory_buffer().world;
+			D3DXVECTOR3 eye;
+			UMGetCameraEye(&eye);
+			D3DXVECTOR4 fov;
+			UMGetCameraFovLH(&fov);
+
+			if (pre_eye != eye || pre_fov != fov || pre_world != world) {
+				UpdateOptix(frame);
+				pre_world = world;
+				pre_eye = eye;
+				pre_fov = fov;
+			}
+			/*
 			if (frame >= parameter.start_frame && frame <= parameter.end_frame)
 			{
 				if (exportedFrames.find(frame) == exportedFrames.end())
@@ -1519,7 +1542,7 @@ static HRESULT WINAPI present(
 					}
 					pre_frame = frame;
 				}
-			}
+			}*/
 		}
 		BridgeParameter::mutable_instance().finish_buffer_list.clear();
 		presentCount++;
