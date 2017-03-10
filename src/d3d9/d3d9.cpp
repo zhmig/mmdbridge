@@ -1198,10 +1198,7 @@ static HRESULT WINAPI endScene(IDirect3DDevice9 *device)
 
 	BridgeParameter& parameter = BridgeParameter::mutable_instance();
 	static bool init = false;
-	//static LPDIRECT3DTEXTURE9 texture = NULL;
 	if (!init) {
-		//D3DXCreateTextureFromFile(device, _T("D:\\hoge.jpg"), &texture);
-
 		D3DXCreateTexture(device, parameter.viewport_width, parameter.viewport_height, 0
 			, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &parameter.preview_tex);
 		init = true;
@@ -1216,14 +1213,18 @@ static HRESULT WINAPI endScene(IDirect3DDevice9 *device)
 	};
 	D3DVIEWPORT9 viewport;
 	device->lpVtbl->GetViewport(device, &viewport);
+	const int x0 = viewport.X - 1;
+	const int y0 = viewport.Y - 1;
+	const int x1 = x0 + viewport.Width + 1;
+	const int y1 = y0 + viewport.Height + 1;
 
 	// 頂点を準備
 	VTX vertex[4] =
 	{
-		{ viewport.X, viewport.Y, 0, 1.0f, 0xFFFFFFFF, 0, 0 },    //左上
-		{ viewport.X + viewport.Width, viewport.Y, 0, 1.0f, 0xFFFFFFFF, 1, 0 },    //右上
-		{ viewport.X, viewport.Y + viewport.Height, 0, 1.0f, 0xFFFFFFFF, 0, 1 },    //左下
-		{ viewport.X + viewport.Width, viewport.Y + viewport.Height, 0, 1.0f, 0xFFFFFFFF, 1, 1 },    //右下
+		{ x0, y0, 0, 1.0f, 0xFFFFFFFF, 0, 0 },    //左上
+		{ x1, y0, 0, 1.0f, 0xFFFFFFFF, 1, 0 },    //右上
+		{ x0, y1, 0, 1.0f, 0xFFFFFFFF, 0, 1 },    //左下
+		{ x1, y1, 0, 1.0f, 0xFFFFFFFF, 1, 1 },    //右下
 	};
 	UINT numPass = 0;
 
@@ -2480,7 +2481,6 @@ bool d3d9_initialize()
 void d3d9_dispose() 
 {
 	renderData.dispose();
-	DisposeOptix();
 	DisposePMX();
 	DisposeVMD();
 	DisposeAlembic();
@@ -2494,6 +2494,9 @@ BOOL APIENTRY DllMain(HINSTANCE hinst, DWORD reason, LPVOID)
 		case DLL_PROCESS_ATTACH:
 			hInstance=hinst;
 			d3d9_initialize();
+			break;
+		case DLL_THREAD_DETACH:
+			DisposeOptix();
 			break;
 		case DLL_PROCESS_DETACH:
 			d3d9_dispose();

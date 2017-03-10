@@ -176,7 +176,8 @@ static TextureSampler loadTexture(IDirect3DTexture9* texture, const float3& defa
 	sampler->setArraySize(1u);
 
 	D3DLOCKED_RECT lockRect;
-	if (texture && texture->lpVtbl->LockRect(texture, 0, &lockRect, NULL, D3DLOCK_READONLY) == D3D_OK) {
+	if (texture && texture->lpVtbl->LockRect(texture, 0, &lockRect, NULL, D3DLOCK_READONLY) == D3D_OK)
+	{
 		IDirect3DSurface9 *surface;
 		texture->lpVtbl->GetSurfaceLevel(texture, 0, &surface);
 		D3DSURFACE_DESC desc;
@@ -199,7 +200,8 @@ static TextureSampler loadTexture(IDirect3DTexture9* texture, const float3& defa
 		sampler->setBuffer(0u, 0u, buffer);
 		sampler->setFilteringModes(RT_FILTER_LINEAR, RT_FILTER_LINEAR, RT_FILTER_NONE);
 	}
-	else {
+	else
+	{
 		optix::Buffer buffer = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_UNSIGNED_BYTE4, 1u, 1u);
 		unsigned char* buffer_data = static_cast<unsigned char*>(buffer->map());
 		buffer_data[0] = (unsigned char)clamp((int)(default_color.x * 255.0f), 0, 255);
@@ -493,11 +495,6 @@ static GeometryInstance createMMDMesh(const RenderedBuffer & renderedBuffer, int
 		optix_materials.begin(),
 		optix_materials.end()
 		);
-	//const float3 light_em = make_float3(15.0f, 15.0f, 5.0f);
-	//Material diffuse = optix_materials[0];
-	//gi->addMaterial(diffuse);
-	//gi["emission_color"]->setFloat(light_em);
-
 
 	optix_tri_indices->unmap();
 	optix_positions->unmap();
@@ -841,7 +838,15 @@ void DisposeOptix()
 {
 	if (context)
 	{
-		context->destroy();
+		try
+		{
+			context->destroy();
+		}
+		catch (optix::Exception& ex)
+		{
+			const std::string error = ex.getErrorString();
+			::MessageBoxA(NULL, (LPCSTR)error.c_str(), "Dispose Error", MB_OK);
+		}
 		context = 0;
 	}
 }
