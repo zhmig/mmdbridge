@@ -1480,6 +1480,8 @@ static int pre_buffer_size = 0;
 static D3DXMATRIX pre_world;
 static D3DXVECTOR3 pre_eye;
 static D3DXVECTOR4 pre_fov;
+static int frame_for_pt = 0;
+
 
 static bool IsValidTechniq() {
 	const int technic = ExpGetCurrentTechnic();
@@ -1512,8 +1514,9 @@ static HRESULT WINAPI present(
 			const BridgeParameter& parameter = BridgeParameter::instance();
 			int frame = static_cast<int>(time * BridgeParameter::instance().export_fps + 0.5f);
 			if (pre_buffer_size != get_vertex_buffer_size()) {
+				frame_for_pt = 0;
 				DisposeOptix();
-				StartOptix(frame);
+				StartOptix(frame_for_pt);
 				pre_buffer_size = get_vertex_buffer_size();
 			}
 			D3DXMATRIX world = BridgeParameter::mutable_instance().first_noaccessory_buffer().world;
@@ -1523,11 +1526,16 @@ static HRESULT WINAPI present(
 			UMGetCameraFovLH(&fov);
 
 			if (pre_eye != eye || pre_fov != fov || pre_world != world) {
-				UpdateOptix(frame);
+				frame_for_pt = 0;
+				UpdateOptix(frame_for_pt);
 				pre_world = world;
 				pre_eye = eye;
 				pre_fov = fov;
 			}
+			else {
+				UpdateOptix(frame_for_pt);
+			}
+			++frame_for_pt;
 			/*
 			if (frame >= parameter.start_frame && frame <= parameter.end_frame)
 			{
