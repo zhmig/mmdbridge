@@ -1520,13 +1520,22 @@ static HRESULT WINAPI present(
 				StartOptix(frame_for_pt);
 				pre_buffer_size = get_vertex_buffer_size();
 			}
+
+			bool isGeometryUpdated = false;
+			if (pre_frame != frame)
+			{
+				UpdateOptixGeometry();
+				isGeometryUpdated = true;
+				pre_frame = frame;
+			}
+
 			D3DXMATRIX world = BridgeParameter::mutable_instance().first_noaccessory_buffer().world;
 			D3DXVECTOR3 eye;
 			UMGetCameraEye(&eye);
 			D3DXVECTOR4 fov;
 			UMGetCameraFovLH(&fov);
 
-			if (pre_eye != eye || pre_fov != fov || pre_world != world) {
+			if (isGeometryUpdated || pre_eye != eye || pre_fov != fov || pre_world != world) {
 				frame_for_pt = 0;
 				UpdateOptix(frame_for_pt);
 				pre_world = world;
@@ -1537,6 +1546,7 @@ static HRESULT WINAPI present(
 				UpdateOptix(frame_for_pt);
 			}
 			++frame_for_pt;
+
 			/*
 			if (frame >= parameter.start_frame && frame <= parameter.end_frame)
 			{

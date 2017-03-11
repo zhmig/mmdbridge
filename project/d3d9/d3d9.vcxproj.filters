@@ -51,6 +51,9 @@
     <ClInclude Include="..\..\src\d3d9\stb_image_write.h">
       <Filter>src</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\src\d3d9\tinyexr.h">
+      <Filter>src</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\src\d3d9\d3d9.cpp">

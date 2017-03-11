@@ -12,6 +12,7 @@
 //#  endif
 //#endif
 #define STB_IMAGE_WRITE_IMPLEMENTATION
+#define TINYEXR_IMPLEMENTATION
 #define _CRT_SECURE_NO_WARNINGS
 #include "d3d9.h"
 #include "d3dx9.h"
@@ -25,6 +26,7 @@
 
 #include "stb_image.h"
 #include "stb_image_write.h"
+#include "tinyexr.h"
 
 #include <boost/python/detail/wrap_python.hpp>
 #include <boost/python.hpp>
@@ -52,12 +54,24 @@ using namespace optix;
 
 namespace
 {
+	struct MMDMesh
+	{
+		optix::Buffer optix_tri_indices;
+		optix::Buffer optix_mat_indices;
+		optix::Buffer optix_positions;
+		optix::Buffer optix_normals;
+		optix::Buffer optix_texcoords;
+	};
+
 
 	Context        context = NULL;
+	GeometryGroup geometry_group;
 	std::string export_directory;
 	Program        pgram_intersection = 0;
 	Program        pgram_bounding_box = 0;
 	optix::Aabb    aabb;
+
+	std::vector< MMDMesh > mmd_mesh_list;
 
 	// Camera state
 	float3         camera_up;
@@ -285,7 +299,7 @@ static void createContext(int width, int height)
 	// Miss program
 	ptx_path = constantbgCuPath();
 	context->setMissProgram(0, context->createProgramFromPTXFile(ptx_path, "miss"));
-	context["bg_color"]->setFloat(0.34f, 0.55f, 0.85f);
+	context["bg_color"]->setFloat(0.85f, 0.85f, 0.85f);
 }
 
 static void createContextPT(int width, int height)
@@ -312,7 +326,7 @@ static void createContextPT(int width, int height)
 
 	context["sqrt_num_samples"]->setUint(2);
 	context["bad_color"]->setFloat(1000000.0f, 0.0f, 1000000.0f); // Super magenta to make sure it doesn't get averaged out in the progressive rendering.
-	context["bg_color"]->setFloat(make_float3(0.5f));
+	context["bg_color"]->setFloat(make_float3(0.85f));
 }
 
 static void setupCamera()
@@ -403,63 +417,31 @@ static GeometryInstance createParallelogram(
 	return gi;
 }
 
-static GeometryInstance createMMDMesh(const RenderedBuffer & renderedBuffer, int renderedBufferIndex)
+static void updateMMDMesh(MMDMesh& mmd_mesh, const RenderedBuffer & renderedBuffer, int renderedBufferIndex)
 {
-	Geometry geometry = context->createGeometry();
-
-	MeshBuffers buffers;
-
-	int num_triangles = 0;
-	for (int k = 0, ksize = static_cast<int>(renderedBuffer.materials.size()); k < ksize; ++k)
-	{
-		RenderedMaterial* material = renderedBuffer.materials.at(k);
-		num_triangles += material->surface.faces.size();
-	}
-
 	const RenderedBuffer::UVList &uvList = renderedBuffer.uvs;
 	const RenderedBuffer::VertexList &vertexList = renderedBuffer.vertecies;
 	const RenderedBuffer::NormalList &normalList = renderedBuffer.normals;
 
-	optix::Buffer optix_tri_indices = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_INT3, num_triangles);
-	optix::Buffer optix_mat_indices = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_INT, num_triangles);
-	optix::Buffer optix_positions = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT3, vertexList.size());
-	optix::Buffer optix_normals = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT3, normalList.size());
-	optix::Buffer optix_texcoords = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT2, uvList.empty() ? 0 : uvList.size());
-	std::vector<optix::Material> optix_materials;
-
-	optix::Program tex_closest_hit;
-	optix::Program tex_any_hit;
-	optix::Program closest_hit;
-	optix::Program any_hit;
-	createMaterialProgramsPT(context, true, tex_closest_hit, tex_any_hit);
-	createMaterialProgramsPT(context, false, closest_hit, any_hit);
-
 	// indices
-	UMVec3i* indices = reinterpret_cast<UMVec3i*>(optix_tri_indices->map());
-	int32_t* mat_indices = reinterpret_cast<int32_t*>(optix_mat_indices->map());
+	UMVec3i* indices = reinterpret_cast<UMVec3i*>(mmd_mesh.optix_tri_indices->map());
+	int32_t* mat_indices = reinterpret_cast<int32_t*>(mmd_mesh.optix_mat_indices->map());
 	int index = 0;
 	for (int k = 0, ksize = static_cast<int>(renderedBuffer.materials.size()); k < ksize; ++k)
 	{
 		RenderedMaterial* material = renderedBuffer.materials.at(k);
-		const bool use_texture = !material->memoryTexture.empty();
 
 		for (int n = 0; n < material->surface.faces.size(); ++n)
 		{
-			mat_indices[index] = optix_materials.size();
+			mat_indices[index] = k;
 			UMVec3i face = material->surface.faces[n];
 			indices[index] = UMVec3i(face.x - 1, face.y - 1, face.z - 1);
 			index++;
 		};
-		optix_materials.push_back(createOptiXMaterial(
-			context,
-			use_texture ? tex_closest_hit : closest_hit,
-			use_texture ? tex_any_hit : any_hit,
-			material,
-			use_texture));
 	}
 
 	UMBox box;
-	UMVec3f* vertices = reinterpret_cast<UMVec3f*>  (optix_positions->map());
+	UMVec3f* vertices = reinterpret_cast<UMVec3f*>  (mmd_mesh.optix_positions->map());
 	for (int i = 0; i < vertexList.size(); ++i) {
 		D3DXVECTOR3 v = vertexList[i];
 		UMVec3d vv(v.x, v.y, v.z);
@@ -471,21 +453,76 @@ static GeometryInstance createMMDMesh(const RenderedBuffer & renderedBuffer, int
 	float3 bmax = make_float3(box.maximum().x, box.maximum().y, box.maximum().z);
 	aabb.set(bmin, bmax);
 
-	UMVec3f* normals = reinterpret_cast<UMVec3f*>  (optix_normals->map());
+	UMVec3f* normals = reinterpret_cast<UMVec3f*>  (mmd_mesh.optix_normals->map());
 	memcpy(normals, &(*normalList.begin()), normalList.size() * sizeof(UMVec3f));
 
 	UMVec2f* uvs = NULL;
 	if (!uvList.empty())
 	{
-		uvs = reinterpret_cast<UMVec2f*>  (optix_texcoords->map());
+		uvs = reinterpret_cast<UMVec2f*>  (mmd_mesh.optix_texcoords->map());
 		memcpy(uvs, &(*uvList.begin()), uvList.size() * sizeof(UMVec2f));
 	}
 
-	geometry["vertex_buffer"]->setBuffer(optix_positions);
-	geometry["normal_buffer"]->setBuffer(optix_normals);
-	geometry["texcoord_buffer"]->setBuffer(optix_texcoords);
-	geometry["material_buffer"]->setBuffer(optix_mat_indices);
-	geometry["index_buffer"]->setBuffer(optix_tri_indices);
+	mmd_mesh.optix_tri_indices->unmap();
+	mmd_mesh.optix_positions->unmap();
+	mmd_mesh.optix_normals->unmap();
+	if (!uvList.empty())
+	{
+		mmd_mesh.optix_texcoords->unmap();
+	}
+	mmd_mesh.optix_mat_indices->unmap();
+
+}
+
+static GeometryInstance createMMDMesh(MMDMesh& mmd_mesh, const RenderedBuffer & renderedBuffer, int renderedBufferIndex)
+{
+	Geometry geometry = context->createGeometry();
+
+	MeshBuffers buffers;
+
+	const RenderedBuffer::UVList &uvList = renderedBuffer.uvs;
+	const RenderedBuffer::VertexList &vertexList = renderedBuffer.vertecies;
+	const RenderedBuffer::NormalList &normalList = renderedBuffer.normals;
+
+	int num_triangles = 0;
+	for (int k = 0, ksize = static_cast<int>(renderedBuffer.materials.size()); k < ksize; ++k)
+	{
+		RenderedMaterial* material = renderedBuffer.materials.at(k);
+		num_triangles += material->surface.faces.size();
+	}
+
+	mmd_mesh.optix_tri_indices = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_INT3, num_triangles);
+	mmd_mesh.optix_mat_indices = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_INT, num_triangles);
+	mmd_mesh.optix_positions = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT3, vertexList.size());
+	mmd_mesh.optix_normals = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT3, normalList.size());
+	mmd_mesh.optix_texcoords = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT2, uvList.empty() ? 0 : uvList.size());
+	std::vector<optix::Material> optix_materials;
+
+	optix::Program tex_closest_hit;
+	optix::Program tex_any_hit;
+	optix::Program closest_hit;
+	optix::Program any_hit;
+	createMaterialProgramsPT(context, true, tex_closest_hit, tex_any_hit);
+	createMaterialProgramsPT(context, false, closest_hit, any_hit);
+
+	updateMMDMesh(mmd_mesh, renderedBuffer, renderedBufferIndex);
+	for (int k = 0, ksize = static_cast<int>(renderedBuffer.materials.size()); k < ksize; ++k)
+	{
+		RenderedMaterial* material = renderedBuffer.materials.at(k);
+		const bool use_texture = !material->memoryTexture.empty();
+		optix_materials.push_back(createOptiXMaterial(
+			context,
+			use_texture ? tex_closest_hit : closest_hit,
+			use_texture ? tex_any_hit : any_hit,
+			material,
+			use_texture));
+	}
+
+	geometry["vertex_buffer"]->setBuffer(mmd_mesh.optix_positions);
+	geometry["normal_buffer"]->setBuffer(mmd_mesh.optix_normals);
+	geometry["texcoord_buffer"]->setBuffer(mmd_mesh.optix_texcoords);
+	geometry["material_buffer"]->setBuffer(mmd_mesh.optix_mat_indices);
+	geometry["index_buffer"]->setBuffer(mmd_mesh.optix_tri_indices);
 	geometry->setPrimitiveCount(num_triangles);
 	geometry->setBoundingBoxProgram(pgram_bounding_box);
 	geometry->setIntersectionProgram(pgram_intersection);
@@ -495,15 +532,6 @@ static GeometryInstance createMMDMesh(const RenderedBuffer & renderedBuffer, int
 		optix_materials.begin(),
 		optix_materials.end()
 		);
-
-	optix_tri_indices->unmap();
-	optix_positions->unmap();
-	optix_normals->unmap();
-	if (!uvList.empty())
-	{
-		optix_texcoords->unmap();
-	}
-	optix_mat_indices->unmap();
 
 	return gi;
 }
@@ -546,11 +574,11 @@ static void setupLightsPT()
 	const float max_dim = fmaxf(aabb.extent(0), aabb.extent(1)); // max of x, y components
 
 	ParallelogramLight light;
-	light.corner = make_float3(343.0f, 548.6f, 227.0f);
+	light.corner = make_float3(343.0f, 548.6f, -227.0f);
 	light.v1 = make_float3(-130.0f, 0.0f, 0.0f);
 	light.v2 = make_float3(0.0f, 0.0f, 105.0f);
 	light.normal = normalize(cross(light.v1, light.v2));
-	light.emission = make_float3(15.0f, 15.0f, 5.0f);
+	light.emission = make_float3(15.0f, 15.0f, 5.0f) * 5;
 
 	Buffer light_buffer = context->createBuffer(RT_BUFFER_INPUT);
 	light_buffer->setFormat(RT_FORMAT_USER);
@@ -573,10 +601,11 @@ static void loadGeometry()
 	// MMDメッシュの設定
 	const BridgeParameter& parameter = BridgeParameter::instance();
 	const VertexBufferList& finishBuffers = BridgeParameter::instance().finish_buffer_list;
+	mmd_mesh_list.resize(finishBuffers.size());
 	for (int i = 0, isize = static_cast<int>(finishBuffers.size()); i < isize; ++i)
 	{
 		const RenderedBuffer &renderedBuffer = parameter.render_buffer(i);
-		gis.push_back(createMMDMesh(renderedBuffer, i));
+		gis.push_back(createMMDMesh(mmd_mesh_list[i], renderedBuffer, i));
 	}
 
 	// Light
@@ -590,7 +619,7 @@ static void loadGeometry()
 	setMaterial(gis.back(), diffuse_light, "emission_color", light_em);
 
 	// Create geometry group
-	GeometryGroup geometry_group = context->createGeometryGroup(gis.begin(), gis.end());
+	geometry_group = context->createGeometryGroup(gis.begin(), gis.end());
 	geometry_group->setAcceleration(context->createAcceleration("Trbvh"));
 	context["top_object"]->set(geometry_group);
 	context["top_shadower"]->set(geometry_group);
@@ -608,14 +637,15 @@ static void loadGeometryPT()
 	// MMDメッシュの設定
 	const BridgeParameter& parameter = BridgeParameter::instance();
 	const VertexBufferList& finishBuffers = BridgeParameter::instance().finish_buffer_list;
+	mmd_mesh_list.resize(finishBuffers.size());
 	for (int i = 0, isize = static_cast<int>(finishBuffers.size()); i < isize; ++i)
 	{
 		const RenderedBuffer &renderedBuffer = parameter.render_buffer(i);
-		gis.push_back(createMMDMesh(renderedBuffer, i));
+		gis.push_back(createMMDMesh(mmd_mesh_list[i], renderedBuffer, i));
 	}
 
 	// Create geometry group
-	GeometryGroup geometry_group = context->createGeometryGroup(gis.begin(), gis.end());
+	geometry_group = context->createGeometryGroup(gis.begin(), gis.end());
 	geometry_group->setAcceleration(context->createAcceleration("Trbvh"));
 	context["top_object"]->set(geometry_group);
 	context["top_shadower"]->set(geometry_group);
@@ -719,21 +749,45 @@ static void updateCamera(const RenderedBuffer & renderedBuffer, int currentframe
 	camera_changed = false;
 }
 
-
-static void start_optix_export(
-	const std::string& directory_path,
-	int export_mode)
+static void updatePreview(RTbuffer buffer, float gamma)
 {
-	const BridgeParameter& parameter = BridgeParameter::instance();
+	RTsize width, height;
+	rtBufferGetSize2D(buffer, &width, &height);
+	void* data;
+	rtBufferMap(buffer, &data);
 
-	export_directory = directory_path;
-	createContextPT(parameter.viewport_width, parameter.viewport_height);
-	loadGeometryPT();
-	setupLightsPT();
-	setupCamera();
-	context->validate();
+	std::vector<unsigned char> image_buffer(width * height * 4);
+	// This buffer is upside down
+	for (int y = height - 1; y >= 0; --y) {
+		unsigned char *dst = &image_buffer[0] + (4 * width * (height - 1 - y));
+		float* src = ((float*)data) + (4 * width * y);
+		for (int i = 0; i < width; i++) {
+			for (int elem = 0; elem < 4; ++elem) {
+				int P = static_cast<int>(255.0f * powf((*src++), 1.0f / gamma) + 0.5f);
+				unsigned int Clamped = P < 0 ? 0 : P > 0xff ? 0xff : P;
+				*dst++ = static_cast<unsigned char>(Clamped);
+			}
+		}
+	}
+
+	BridgeParameter& parameter = BridgeParameter::mutable_instance();
+	if (!parameter.preview_tex) {
+		return;
+	}
+
+	if (parameter.preview_tex) {
+		D3DLOCKED_RECT lockRect;
+		parameter.preview_tex->lpVtbl->LockRect(parameter.preview_tex, 0, &lockRect, NULL, D3DLOCK_DISCARD);
+		unsigned char* dst = reinterpret_cast<unsigned char*>(lockRect.pBits);
+		for (int y = 0; y < parameter.viewport_height; ++y) {
+			memcpy(dst, &image_buffer[y * width * 4], parameter.viewport_width * 4);
+			dst += lockRect.Pitch;
+		}
+		parameter.preview_tex->lpVtbl->UnlockRect(parameter.preview_tex, 0);
+	}
+
+	rtBufferUnmap(buffer);
 }
-
 static void saveImage(const char* filename, RTbuffer buffer)
 {
 	RTsize width, height;
@@ -759,43 +813,104 @@ static void saveImage(const char* filename, RTbuffer buffer)
 	rtBufferUnmap(buffer);
 }
 
-static void updatePreview(RTbuffer buffer)
+static bool loadEXRHDR(TextureSampler& sampler)
 {
-	RTsize width, height;
-	rtBufferGetSize2D(buffer, &width, &height);
-	void* data;
-	rtBufferMap(buffer, &data);
+	const char* input = "D:\\IBL\\hdrmaps_com_free_072\\hdrmaps_com_free_072_Ref.exr";
 
-	std::vector<unsigned char> image_buffer(width * height * 4);
-	// This buffer is upside down
-	for (int y = height - 1; y >= 0; --y) {
-		unsigned char *dst = &image_buffer[0] + (4 * width * (height - 1 - y));
-		float* src = ((float*)data) + (4 * width * y);
-		for (int i = 0; i < width; i++) {
-			for (int elem = 0; elem < 4; ++elem) {
-				int P = static_cast<int>((*src++) * 255.0f);
-				unsigned int Clamped = P < 0 ? 0 : P > 0xff ? 0xff : P;
-				*dst++ = static_cast<unsigned char>(Clamped);
+	sampler->setWrapMode(0, RT_WRAP_REPEAT);
+	sampler->setWrapMode(1, RT_WRAP_REPEAT);
+	sampler->setWrapMode(2, RT_WRAP_REPEAT);
+	sampler->setIndexingMode(RT_TEXTURE_INDEX_NORMALIZED_COORDINATES);
+	sampler->setReadMode(RT_TEXTURE_READ_NORMALIZED_FLOAT);
+
+	// 1. Read EXR version.
+	EXRVersion exr_version;
+	int ret = ParseEXRVersionFromFile(&exr_version, input);
+	if (ret != 0) {
+		return false;
+	}
+
+	if (exr_version.multipart) {
+		// must be multipart flag is false.
+		return false;
+	}
+
+	// 2. Read EXR header
+	EXRHeader exr_header;
+	InitEXRHeader(&exr_header);
+
+	const char* err;
+	ret = ParseEXRHeaderFromFile(&exr_header, &exr_version, input, &err);
+	if (ret != 0) {
+		//fprintf(stderr, "Parse EXR err: %s\n", err);
+		return false;
+	}
+	if (exr_header.num_channels != 3 && exr_header.num_channels != 4) {
+		return false;
+	}
+
+	// Read HALF channel as FLOAT.
+	for (int i = 0; i < exr_header.num_channels; i++) {
+		if (exr_header.pixel_types[i] == TINYEXR_PIXELTYPE_HALF) {
+			exr_header.requested_pixel_types[i] = TINYEXR_PIXELTYPE_FLOAT;
+		}
+	}
+
+	EXRImage exr_image;
+	InitEXRImage(&exr_image);
+
+	ret = LoadEXRImageFromFile(&exr_image, &exr_header, input, &err);
+	if (ret != 0) {
+		//fprintf(stderr, "Load EXR err: %s\n", err);
+		return false;
+	}
+
+	optix::Buffer buffer = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT4, exr_image.width, exr_image.height);
+	float* buffer_data = static_cast<float*>(buffer->map());
+	if (exr_image.num_channels == 4) {
+		float* a = reinterpret_cast<float*>(exr_image.images[0]);
+		float* b = reinterpret_cast<float*>(exr_image.images[1]);
+		float* g = reinterpret_cast<float*>(exr_image.images[2]);
+		float* r = reinterpret_cast<float*>(exr_image.images[3]);
+		for (int y = 0; y < exr_image.height; ++y)
+		{
+			for (int x = 0; x < exr_image.width; ++x)
+			{
+				const int srcpos = (y * exr_image.width + x);
+				const int dstpos = ((exr_image.height - y - 1) * exr_image.width + x);
+				buffer_data[dstpos * 4 + 0] = b[srcpos]; // b
+				buffer_data[dstpos * 4 + 1] = g[srcpos]; // g
+				buffer_data[dstpos * 4 + 2] = r[srcpos]; // r
+				buffer_data[dstpos * 4 + 3] = a[srcpos]; // a
 			}
 		}
 	}
+	buffer->unmap();
 
-	BridgeParameter& parameter = BridgeParameter::mutable_instance();
-	if (!parameter.preview_tex) {
-	}
+	sampler->setBuffer(buffer);
+	sampler->setFilteringModes(RT_FILTER_LINEAR, RT_FILTER_LINEAR, RT_FILTER_NONE);
 
-	if (parameter.preview_tex) {
-		D3DLOCKED_RECT lockRect;
-		parameter.preview_tex->lpVtbl->LockRect(parameter.preview_tex, 0, &lockRect, NULL, D3DLOCK_DISCARD);
-		unsigned char* dst = reinterpret_cast<unsigned char*>(lockRect.pBits);
-		for (int y = 0; y < height; ++y) {
-			memcpy(dst, &image_buffer[y * width * 4], width * 4);
-			dst += lockRect.Pitch;
-		}
-		parameter.preview_tex->lpVtbl->UnlockRect(parameter.preview_tex, 0);
-	}
+	context["envmap"]->setTextureSampler(sampler);
+	//updatePreview(buffer->get());
 
-	rtBufferUnmap(buffer);
+	FreeEXRImage(&exr_image);
+	return true;
+}
+
+static void start_optix_export(
+	const std::string& directory_path,
+	int export_mode)
+{
+	const BridgeParameter& parameter = BridgeParameter::instance();
+
+	export_directory = directory_path;
+	createContextPT(parameter.viewport_width, parameter.viewport_height);
+	optix::TextureSampler sampler = context->createTextureSampler();
+	bool result = loadEXRHDR(sampler);
+	loadGeometryPT();
+	setupLightsPT();
+	setupCamera();
+	context->validate();
 }
 
 static void execute_optix_export(int currentframe)
@@ -822,7 +937,7 @@ static void execute_optix_export(int currentframe)
 	//std::string file = umbase::UMStringUtil::wstring_to_utf8(parameter.base_path) + ("out\\frame_")
 	//	+ umbase::UMStringUtil::number_to_string(currentframe) + ".png";
 	//saveImage(file.c_str(), getOutputBuffer()->get());
-	updatePreview(getOutputBuffer()->get());
+	updatePreview(getOutputBuffer()->get(), 2.2f);
 }
 
 static void end_optix_export()
@@ -860,6 +975,19 @@ void UpdateOptix(int currentframe)
 {
 	execute_optix_export(currentframe);
 }
+
+void UpdateOptixGeometry()
+{
+	const BridgeParameter& parameter = BridgeParameter::instance();
+	const VertexBufferList& finishBuffers = BridgeParameter::instance().finish_buffer_list;
+	for (int i = 0, isize = static_cast<int>(finishBuffers.size()); i < isize; ++i)
+	{
+		const RenderedBuffer &renderedBuffer = parameter.render_buffer(i);
+		updateMMDMesh(mmd_mesh_list[i], renderedBuffer, i);
+	}
+	geometry_group->getAcceleration()->markDirty();
+}
+
 // ---------------------------------------------------------------------------
 BOOST_PYTHON_MODULE(mmdbridge_optix)
 {

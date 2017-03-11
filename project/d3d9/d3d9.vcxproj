@@ -242,6 +242,7 @@
     <ClInclude Include="..\..\src\d3d9\resource.h" />
     <ClInclude Include="..\..\src\d3d9\stb_image.h" />
     <ClInclude Include="..\..\src\d3d9\stb_image_write.h" />
+    <ClInclude Include="..\..\src\d3d9\tinyexr.h" />
     <ClInclude Include="..\..\src\d3d9\vmd.h" />
   </ItemGroup>
   <ItemGroup>
