@@ -144,7 +144,6 @@ void createMaterialPrograms(
 	optix::Program&        any_hit
 	)
 {
-	const BridgeParameter& parameter = BridgeParameter::instance();
 	std::string path = phongCuPath();
 
 	const std::string closest_name = use_textures ?
@@ -164,11 +163,10 @@ void createMaterialProgramsPT(
 	optix::Program&        any_hit
 	)
 {
-	const BridgeParameter& parameter = BridgeParameter::instance();
 	std::string path = ptxPath();
 
 	const std::string closest_name = use_textures ?
-		"diffuse_textured" :
+		"diffuse_textured_ao" :
 		"diffuse";
 
 	if (!closest_hit)
@@ -281,7 +279,7 @@ static void createContext(int width, int height)
 
 	context["radiance_ray_type"]->setUint(0u);
 	context["shadow_ray_type"]->setUint(1u);
-	context["scene_epsilon"]->setFloat(1.e-4f);
+	context["scene_epsilon"]->setFloat(1.e-3f);
 
 	Buffer buffer = context->createBuffer(RT_BUFFER_OUTPUT, RT_FORMAT_FLOAT4, width, height);
 	context["output_buffer"]->set(buffer);
@@ -299,6 +297,7 @@ static void createContext(int width, int height)
 	// Miss program
 	ptx_path = constantbgCuPath();
 	context->setMissProgram(0, context->createProgramFromPTXFile(ptx_path, "miss"));
+	context->setMissProgram(2, context->createProgramFromPTXFile(ptx_path, "miss_ao"));
 	context["bg_color"]->setFloat(0.85f, 0.85f, 0.85f);
 }
 
@@ -306,13 +305,14 @@ static void createContextPT(int width, int height)
 {
 	// Set up context
 	context = Context::create();
-	context->setRayTypeCount(2);
+	context->setRayTypeCount(3);
 	context->setEntryPointCount(1);
 	context->setStackSize(1040);
 
 	context["scene_epsilon"]->setFloat(1.e-3f);
 	context["pathtrace_ray_type"]->setUint(0u);
 	context["pathtrace_shadow_ray_type"]->setUint(1u);
+	context["pathtrace_ao_ray_type"]->setUint(2u);
 	context["rr_begin_depth"]->setUint(1);
 
 	Buffer buffer = context->createBuffer(RT_BUFFER_OUTPUT, RT_FORMAT_FLOAT4, width, height);
@@ -323,6 +323,15 @@ static void createContextPT(int width, int height)
 	context->setRayGenerationProgram(0, context->createProgramFromPTXFile(ptx_path, "pathtrace_camera"));
 	context->setExceptionProgram(0, context->createProgramFromPTXFile(ptx_path, "exception"));
 	context->setMissProgram(0, context->createProgramFromPTXFile(ptx_path, "miss"));
+
+	// Random seed buffer
+	Buffer seed_buffer = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_UNSIGNED_INT, width, height);
+	unsigned int* seeds = reinterpret_cast<unsigned int*>(seed_buffer->map());
+	for (unsigned int i = 0; i < width*height; ++i) {
+		seeds[i] = rand();
+	}
+	seed_buffer->unmap();
+	context["rnd_seeds"]->set(seed_buffer);
 
 	context["sqrt_num_samples"]->setUint(2);
 	context["bad_color"]->setFloat(1000000.0f, 0.0f, 1000000.0f); // Super magenta to make sure it doesn't get averaged out in the progressive rendering.
@@ -504,18 +513,21 @@ static GeometryInstance createMMDMesh(MMDMesh& mmd_mesh, const RenderedBuffer & 
 	optix::Program any_hit;
 	createMaterialProgramsPT(context, true, tex_closest_hit, tex_any_hit);
 	createMaterialProgramsPT(context, false, closest_hit, any_hit);
+	optix::Program any_hit_ao = context->createProgramFromPTXFile(ptxPath(), "shadow_ao");
 
 	updateMMDMesh(mmd_mesh, renderedBuffer, renderedBufferIndex);
 	for (int k = 0, ksize = static_cast<int>(renderedBuffer.materials.size()); k < ksize; ++k)
 	{
 		RenderedMaterial* material = renderedBuffer.materials.at(k);
 		const bool use_texture = !material->memoryTexture.empty();
-		optix_materials.push_back(createOptiXMaterial(
+		optix::Material mat = createOptiXMaterial(
 			context,
 			use_texture ? tex_closest_hit : closest_hit,
 			use_texture ? tex_any_hit : any_hit,
 			material,
-			use_texture));
+			use_texture);
+		mat->setAnyHitProgram(2u, any_hit_ao);
+		optix_materials.push_back(mat);
 	}
 
 	geometry["vertex_buffer"]->setBuffer(mmd_mesh.optix_positions);
@@ -905,8 +917,8 @@ static void start_optix_export(
 
 	export_directory = directory_path;
 	createContextPT(parameter.viewport_width, parameter.viewport_height);
-	optix::TextureSampler sampler = context->createTextureSampler();
-	bool result = loadEXRHDR(sampler);
+	//optix::TextureSampler sampler = context->createTextureSampler();
+	//bool result = loadEXRHDR(sampler);
 	loadGeometryPT();
 	setupLightsPT();
 	setupCamera();
