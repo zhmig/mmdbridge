@@ -28,20 +28,6 @@
 #include "stb_image_write.h"
 #include "tinyexr.h"
 
-#include <boost/python/detail/wrap_python.hpp>
-#include <boost/python.hpp>
-#include <boost/python/make_constructor.hpp>
-#include <boost/python/suite/indexing/vector_indexing_suite.hpp>
-#include <boost/python/suite/indexing/map_indexing_suite.hpp>
-#include <boost/python/copy_non_const_reference.hpp>
-#include <boost/python/module.hpp>
-#include <boost/python/def.hpp>
-#include <boost/python/args.hpp>
-#include <boost/python/tuple.hpp>
-#include <boost/python/class.hpp>
-#include <boost/python/overloads.hpp>
-#include <boost/format.hpp>
-
 #include "optix.h"
 
 #include <optixu/optixpp_namespace.h>
@@ -336,6 +322,21 @@ static void createContextPT(int width, int height)
 	context["sqrt_num_samples"]->setUint(2);
 	context["bad_color"]->setFloat(1000000.0f, 0.0f, 1000000.0f); // Super magenta to make sure it doesn't get averaged out in the progressive rendering.
 	context["bg_color"]->setFloat(make_float3(0.85f));
+}
+
+static void resize(int width, int height)
+{
+	optix::Buffer buffer = getOutputBuffer();
+	buffer->setSize(width, height);
+	buffer->validate();
+
+	optix::Buffer seedBuffer = context["rnd_seeds"]->getBuffer();
+	seedBuffer->setSize(width, height);
+	unsigned int* seeds = reinterpret_cast<unsigned int*>(seedBuffer->map());
+	for (unsigned int i = 0; i < width*height; ++i) {
+		seeds[i] = rand();
+	}
+	seedBuffer->unmap();
 }
 
 static void setupCamera()
@@ -763,8 +764,14 @@ static void updateCamera(const RenderedBuffer & renderedBuffer, int currentframe
 
 static void updatePreview(RTbuffer buffer, float gamma)
 {
+	BridgeParameter& parameter = BridgeParameter::mutable_instance();
+	if (!parameter.preview_tex) {
+		return;
+	}
+
 	RTsize width, height;
 	rtBufferGetSize2D(buffer, &width, &height);
+
 	void* data;
 	rtBufferMap(buffer, &data);
 
@@ -782,14 +789,9 @@ static void updatePreview(RTbuffer buffer, float gamma)
 		}
 	}
 
-	BridgeParameter& parameter = BridgeParameter::mutable_instance();
-	if (!parameter.preview_tex) {
-		return;
-	}
-
 	if (parameter.preview_tex) {
 		D3DLOCKED_RECT lockRect;
-		parameter.preview_tex->lpVtbl->LockRect(parameter.preview_tex, 0, &lockRect, NULL, D3DLOCK_DISCARD);
+		HRESULT res = parameter.preview_tex->lpVtbl->LockRect(parameter.preview_tex, 0, &lockRect, NULL, D3DLOCK_DISCARD);
 		unsigned char* dst = reinterpret_cast<unsigned char*>(lockRect.pBits);
 		for (int y = 0; y < parameter.viewport_height; ++y) {
 			memcpy(dst, &image_buffer[y * width * 4], parameter.viewport_width * 4);
@@ -933,6 +935,15 @@ static void execute_optix_export(int currentframe)
 	const VertexBufferList& finishBuffers = BridgeParameter::instance().finish_buffer_list;
 	const RenderBufferMap& renderBuffers = BridgeParameter::instance().render_buffer_map;
 
+	RTsize width, height;
+	optix::Buffer buffer = getOutputBuffer();
+	rtBufferGetSize2D(buffer->get(), &width, &height);
+
+	if (width != parameter.viewport_width || height != parameter.viewport_height)
+	{
+		resize(parameter.viewport_width, parameter.viewport_height);
+	}
+
 	bool exportedCamera = false;
 	for (int i = static_cast<int>(finishBuffers.size()) - 1; i >= 0; --i)
 	{
@@ -949,7 +960,7 @@ static void execute_optix_export(int currentframe)
 	//std::string file = umbase::UMStringUtil::wstring_to_utf8(parameter.base_path) + ("out\\frame_")
 	//	+ umbase::UMStringUtil::number_to_string(currentframe) + ".png";
 	//saveImage(file.c_str(), getOutputBuffer()->get());
-	updatePreview(getOutputBuffer()->get(), 2.2f);
+	updatePreview(buffer->get(), 2.2f);
 }
 
 static void end_optix_export()
@@ -1001,23 +1012,19 @@ void UpdateOptixGeometry()
 }
 
 // ---------------------------------------------------------------------------
-BOOST_PYTHON_MODULE(mmdbridge_optix)
-{
-	using namespace boost::python;
-	def("start_optix_export", start_optix_export);
-	def("execute_optix_export", execute_optix_export);
-	def("end_optix_export", end_optix_export);
-}
+//BOOST_PYTHON_MODULE(mmdbridge_optix)
+//{
+//	using namespace boost::python;
+//	def("start_optix_export", start_optix_export);
+//	def("execute_optix_export", execute_optix_export);
+//	def("end_optix_export", end_optix_export);
+//}
 
 #endif //WITH_OPTIX
 
 
 // ---------------------------------------------------------------------------
 #ifdef WITH_OPTIX
-void InitOptix()
-{
-	PyImport_AppendInittab("mmdbridge_optix", PyInit_mmdbridge_optix);
-}
 
 #else
 void InitOptix() {}

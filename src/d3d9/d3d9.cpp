@@ -12,28 +12,12 @@
 #include <algorithm>
 #include <shlwapi.h>
 
-#include <boost/python/detail/wrap_python.hpp>
-#include <boost/python.hpp>
-#include <boost/python/make_constructor.hpp>
-#include <boost/python/suite/indexing/vector_indexing_suite.hpp>
-#include <boost/python/suite/indexing/map_indexing_suite.hpp>
-#include <boost/python/copy_non_const_reference.hpp>
-#include <boost/python/module.hpp>
-#include <boost/python/def.hpp>
-#include <boost/python/args.hpp>
-#include <boost/python/tuple.hpp>
-#include <boost/python/class.hpp>
-#include <boost/python/overloads.hpp>
-#include <boost/format.hpp>
 #include <commctrl.h>
 #include <richedit.h>
 
 #include <process.h>
 
 #include "bridge_parameter.h"
-#include "alembic.h"
-#include "vmd.h"
-#include "pmx.h"
 #include "optix.h"
 #include "resource.h"
 #include "MMDExport.h"
@@ -67,25 +51,6 @@ static void message(std::string message)
 	::MessageBoxA(NULL, message.c_str(), "message", MB_OK);
 }
 
-static void messagebox_float4(float v[4], const char *title)
-{
-	::MessageBoxA(NULL, std::string(
-		to_string(v[0]) + " "
-		+ to_string(v[1]) + " "
-		+ to_string(v[2]) + " "
-		+ to_string(v[3]) + "\n").c_str(), title, MB_OK);
-}
-
-static void messagebox_matrix(D3DXMATRIX& mat, const char *title)
-{
-	::MessageBoxA(NULL,
-		std::string(
-		to_string(mat._11)+" "+to_string(mat._12)+" "+to_string(mat._13)+" "+to_string(mat._14)+"\n"
-		+to_string(mat._21)+" "+to_string(mat._22)+" "+to_string(mat._23)+" "+to_string(mat._24)+"\n"
-		+to_string(mat._31)+" "+to_string(mat._32)+" "+to_string(mat._33)+" "+to_string(mat._34)+"\n"
-		+to_string(mat._41)+" "+to_string(mat._42)+" "+to_string(mat._43)+" "+to_string(mat._44)+"\n").c_str(), title, MB_OK);
-}
-
 // IDirect3DDevice9のフック関数
 void hookDevice(void);
 void originalDevice(void);
@@ -113,883 +78,9 @@ static int pre_frame = 0;
 static int presentCount = 0;
 static int process_frame = -1;
 static int ui_frame = 0;
+int script_call_setting = 2; // スクリプト呼び出し設定
+std::map<int, int> exportedFrames;
 
-// 行列で3Dベクトルをトランスフォームする
-// D3DXVec3Transformとほぼ同じ
-static void d3d_vector3_dir_transform(
-	D3DXVECTOR3 &dst, 
-	const D3DXVECTOR3 &src, 
-	const D3DXMATRIX &matrix)
-{
-	const float tmp[] = {
-		src.x*matrix.m[0][0] + src.y*matrix.m[1][0] + src.z*matrix.m[2][0],
-		src.x*matrix.m[0][1] + src.y*matrix.m[1][1] + src.z*matrix.m[2][1],
-		src.x*matrix.m[0][2] + src.y*matrix.m[1][2] + src.z*matrix.m[2][2]
-	};
-	dst.x = tmp[0];
-	dst.y = tmp[1];
-	dst.z = tmp[2];
-}
-
-static void d3d_vector3_transform(
-	D3DXVECTOR3 &dst, 
-	const D3DXVECTOR3 &src, 
-	const D3DXMATRIX &matrix)
-{
-	const float tmp[] = {
-		src.x*matrix.m[0][0] + src.y*matrix.m[1][0] + src.z*matrix.m[2][0] + 1.0f*matrix.m[3][0],
-		src.x*matrix.m[0][1] + src.y*matrix.m[1][1] + src.z*matrix.m[2][1] + 1.0f*matrix.m[3][1],
-		src.x*matrix.m[0][2] + src.y*matrix.m[1][2] + src.z*matrix.m[2][2] + 1.0f*matrix.m[3][2]
-	};
-	dst.x = tmp[0];
-	dst.y = tmp[1];
-	dst.z = tmp[2];
-}
-
-// python
-namespace
-{
-	using namespace boost::python;
-	std::wstring pythonName; // スクリプト名
-	int script_call_setting = 2; // スクリプト呼び出し設定
-	std::map<int, int> exportedFrames;
-
-	/// スクリプトのリロード.
-	bool relaod_python_script()
-	{
-		BridgeParameter::mutable_instance().mmdbridge_python_script.clear();
-		std::ifstream ifs(BridgeParameter::instance().python_script_path.c_str());
-		if (!ifs) return false;
-		char buf[2048];
-		while (ifs.getline( buf, sizeof(buf))) {
-			BridgeParameter::mutable_instance().mmdbridge_python_script.append(buf);
-			BridgeParameter::mutable_instance().mmdbridge_python_script.append("\r\n");
-		}
-		ifs.close();
-		return true;
-	}
-
-	/// スクリプトパスのリロード.
-	void reload_python_file_paths()
-	{
-		TCHAR app_full_path[1024];	// アプリフルパス
-		
-		GetModuleFileName(NULL, app_full_path, sizeof(app_full_path) / sizeof(TCHAR));
-
-		BridgeParameter& mutable_parameter = BridgeParameter::mutable_instance();
-		std::wstring searchPath = mutable_parameter.base_path;
-		std::wstring searchStr(searchPath + _T("*.py"));
-
-		// pythonファイル検索
-		WIN32_FIND_DATA find;
-		HANDLE hFind = FindFirstFile(searchStr.c_str(), &find);
-		if (hFind != INVALID_HANDLE_VALUE)
-		{
-			do
-			{
-				if(! (find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
-				{
-					std::wstring name( find.cFileName);
-					std::wstring path(searchPath + find.cFileName);
-					// ファイルだった
-					if (mutable_parameter.python_script_name.empty()) { 
-						mutable_parameter.python_script_name = name;
-						mutable_parameter.python_script_path = path;
-					}
-					mutable_parameter.python_script_name_list.push_back(name);
-					mutable_parameter.python_script_path_list.push_back(path);
-				}
-			} while(FindNextFile(hFind, &find));
-			FindClose(hFind);
-		}
-	}
-
-	// Get a reference to the main module.
-	PyObject* main_module = NULL; 
-
-	// Get the main module's dictionary
-	// and make a copy of it.
-	PyObject* main_dict = NULL;
-
-	int get_vertex_buffer_size()
-	{
-		return BridgeParameter::instance().finish_buffer_list.size();
-	}
-
-	int get_vertex_size(int at)
-	{
-		return BridgeParameter::instance().render_buffer(at).vertecies.size();
-	}
-
-	boost::python::list get_vertex(int at, int vpos)
-	{
-		const RenderedBuffer& buffer = BridgeParameter::instance().render_buffer(at);
-		float x = buffer.vertecies[vpos].x;
-		float y = buffer.vertecies[vpos].y;
-		float z = buffer.vertecies[vpos].z;
-		boost::python::list result;
-		result.append(x);
-		result.append(y);
-		result.append(z);
-		return result;
-	}
-
-	int get_normal_size(int at)
-	{
-		return BridgeParameter::instance().render_buffer(at).normals.size();
-	}
-
-	boost::python::list get_normal(int at, int vpos)
-	{
-		const RenderedBuffer& buffer = BridgeParameter::instance().render_buffer(at);
-		float x = buffer.normals[vpos].x;
-		float y = buffer.normals[vpos].y;
-		float z = buffer.normals[vpos].z;
-		boost::python::list result;
-		result.append(x);
-		result.append(y);
-		result.append(z);
-		return result;
-	}
-
-	int get_uv_size(int at)
-	{
-		return BridgeParameter::instance().render_buffer(at).uvs.size();
-	}
-
-	boost::python::list get_uv(int at, int vpos)
-	{
-		const RenderedBuffer& buffer = BridgeParameter::instance().render_buffer(at);
-		float u = buffer.uvs[vpos].x;
-		float v = buffer.uvs[vpos].y;
-		boost::python::list result;
-		result.append(u);
-		result.append(v);
-		return result;
-	}
-
-	int get_material_size(int at)
-	{
-		return BridgeParameter::instance().render_buffer(at).materials.size();
-	}
-
-	bool is_accessory(int at)
-	{
-		int result = 0;
-		if (BridgeParameter::instance().render_buffer(at).isAccessory)
-		{
-			return true;
-		}
-		return false;
-	}
-
-	int get_pre_accessory_count()
-	{
-		return ExpGetPreAcsNum();
-	}
-
-	boost::python::list get_diffuse(int at, int mpos)
-	{
-		RenderedMaterial* mat = BridgeParameter::instance().render_buffer(at).materials[mpos];
-		boost::python::list result;
-		result.append(mat->diffuse.x);
-		result.append(mat->diffuse.y);
-		result.append(mat->diffuse.z);
-		result.append(mat->diffuse.w);
-		return result;
-	}
-
-	boost::python::list get_ambient(int at, int mpos)
-	{
-		RenderedMaterial* mat = BridgeParameter::instance().render_buffer(at).materials[mpos];
-		boost::python::list result;
-		result.append(mat->ambient.x);
-		result.append(mat->ambient.y);
-		result.append(mat->ambient.z);
-		return result;
-	}
-
-	boost::python::list get_specular(int at, int mpos)
-	{
-		RenderedMaterial* mat = BridgeParameter::instance().render_buffer(at).materials[mpos];
-		boost::python::list result;
-		result.append(mat->specular.x);
-		result.append(mat->specular.y);
-		result.append(mat->specular.z);
-		return result;
-	}
-
-	boost::python::list get_emissive(int at, int mpos)
-	{
-		RenderedMaterial* mat = BridgeParameter::instance().render_buffer(at).materials[mpos];
-		boost::python::list result;
-		result.append(mat->emissive.x);
-		result.append(mat->emissive.y);
-		result.append(mat->emissive.z);
-		return result;
-	}
-
-	float get_power(int at, int mpos)
-	{
-		RenderedMaterial* mat = BridgeParameter::instance().render_buffer(at).materials[mpos];
-		float power = mat->power;
-		return power;
-	}
-
-	std::string get_texture(int at, int mpos)
-	{
-		RenderedMaterial* mat = BridgeParameter::instance().render_buffer(at).materials[mpos];
-		return mat->texture;
-	}
-
-	std::string get_exported_texture(int at, int mpos)
-	{
-		RenderedMaterial* mat = BridgeParameter::instance().render_buffer(at).materials[mpos];
-		return mat->memoryTexture;
-	}
-
-	int get_face_size(int at, int mpos)
-	{
-		return BridgeParameter::instance().render_buffer(at).materials[mpos]->surface.faces.size();
-	}
-
-	boost::python::list get_face(int at, int mpos, int fpos)
-	{
-		RenderedSurface &surface = BridgeParameter::instance().render_buffer(at).materials[mpos]->surface;
-		int v1 = surface.faces[fpos].x;
-		int v2 = surface.faces[fpos].y;
-		int v3 = surface.faces[fpos].z;
-		boost::python::list result;
-		result.append(v1);
-		result.append(v2);
-		result.append(v3);
-		return result;
-	}
-
-	int get_texture_buffer_size()
-	{
-		return finishTextureBuffers.size();
-	}
-
-	boost::python::list get_texture_size(int at)
-	{
-		boost::python::list result;
-		result.append(renderedTextures[finishTextureBuffers[at].first].size.x);
-		result.append(renderedTextures[finishTextureBuffers[at].first].size.y);
-		return result;
-	}
-
-	std::string get_texture_name(int at)
-	{
-		return renderedTextures[finishTextureBuffers[at].first].name;
-	}
-
-	boost::python::list get_texture_pixel(int at, int tpos)
-	{
-		UMVec4f &rgba = renderedTextures[finishTextureBuffers[at].first].texture[tpos];
-		boost::python::list result;
-		result.append(rgba.x);
-		result.append(rgba.y);
-		result.append(rgba.z);
-		result.append(rgba.w);
-		return result;
-	}
-
-	bool export_texture(int at, int mpos, const std::string& dst)
-	{
-		RenderedMaterial* mat = BridgeParameter::instance().render_buffer(at).materials[mpos];
-		std::string path(dst);
-		std::string textureType = path.substr(path.size() - 3, 3);
-
-		D3DXIMAGE_FILEFORMAT fileFormat;
-		if (textureType == "bmp" || textureType == "BMP") { fileFormat = D3DXIFF_BMP; }
-		else if (textureType == "png" || textureType == "PNG") { fileFormat = D3DXIFF_PNG; }
-		else if (textureType == "jpg" || textureType == "JPG") { fileFormat = D3DXIFF_JPG; }
-		else if (textureType == "tga" || textureType == "TGA") { fileFormat = D3DXIFF_TGA; }
-		else if (textureType == "dds" || textureType == "DDS") { fileFormat = D3DXIFF_DDS; }
-		else if (textureType == "ppm" || textureType == "PPM") { fileFormat = D3DXIFF_PPM; }
-		else if (textureType == "dib" || textureType == "DIB") { fileFormat = D3DXIFF_DIB; }
-		else if (textureType == "hdr" || textureType == "HDR") { fileFormat = D3DXIFF_HDR; }
-		else if (textureType == "pfm" || textureType == "PFM") { fileFormat = D3DXIFF_PFM; }
-		else { return false; }
-
-		if (mat->tex)
-		{
-			return writeTextureToFile(path, mat->tex, fileFormat);
-		}
-		return false;
-	}
-
-	bool export_textures(const std::string& p, const std::string& t)
-	{
-		std::u16string path = umbase::UMStringUtil::utf8_to_utf16(p);
-		std::string type(t);
-		if (umbase::UMPath::exists(path))
-		{
-			return writeTextureToFiles(p, t);
-		}
-		return false;
-	}
-
-	bool export_uncopied_textures(const std::string& p, const std::string& t)
-	{
-		std::u16string path = umbase::UMStringUtil::utf8_to_utf16(p);
-		if (umbase::UMPath::exists(path))
-		{
-			return writeTextureToFiles(p, t, true);
-		}
-		return false;
-	}
-
-	bool copy_textures(const std::string& s)
-	{
-		std::u16string path = umbase::UMStringUtil::utf8_to_utf16(s);
-		if (umbase::UMPath::exists(path))
-		{
-			std::wstring wpath = umbase::UMStringUtil::utf16_to_wstring(path);
-			return copyTextureToFiles(path);
-		}
-		return false;
-	}
-
-	std::string get_base_path()
-	{
-		std::string path = umbase::UMStringUtil::wstring_to_utf8(BridgeParameter::instance().base_path);
-		return path;
-	}
-
-	boost::python::list get_camera_up()
-	{
-		D3DXVECTOR3 v;
-		D3DXVECTOR3 dst;
-		UMGetCameraUp(&v);
-		d3d_vector3_dir_transform(dst, v, BridgeParameter::instance().first_noaccessory_buffer().world_inv);
-		boost::python::list result;
-		result.append(dst.x);
-		result.append(dst.y);
-		result.append(dst.z);
-		return result;
-	}
-
-	boost::python::list get_camera_up_org()
-	{
-		D3DXVECTOR3 v;
-		UMGetCameraUp(&v);
-		boost::python::list result;
-		result.append(v.x);
-		result.append(v.y);
-		result.append(v.z);
-		return result;
-	}
-	
-	boost::python::list get_camera_at()
-	{
-		D3DXVECTOR3 v;
-		D3DXVECTOR3 dst;
-		UMGetCameraAt(&v);
-		d3d_vector3_transform(dst, v, BridgeParameter::instance().first_noaccessory_buffer().world_inv);
-		boost::python::list result;
-		result.append(dst.x);
-		result.append(dst.y);
-		result.append(dst.z);
-		return result;
-	}
-
-	boost::python::list get_camera_eye()
-	{
-		D3DXVECTOR3 v;
-		D3DXVECTOR3 dst;
-		UMGetCameraEye(&v);
-		d3d_vector3_transform(dst, v, BridgeParameter::instance().first_noaccessory_buffer().world_inv);
-		boost::python::list result;
-		result.append(dst.x);
-		result.append(dst.y);
-		result.append(dst.z);
-		return result;
-	}
-
-	boost::python::list get_camera_eye_org()
-	{
-		D3DXVECTOR3 v;
-		UMGetCameraEye(&v);
-		boost::python::list result;
-		result.append(v.x);
-		result.append(v.y);
-		result.append(v.z);
-		return result;
-	}
-
-	float get_camera_fovy()
-	{
-		D3DXVECTOR4 v;
-		UMGetCameraFovLH(&v);
-		return  v.x;
-	}
-
-	float get_camera_aspect()
-	{
-		D3DXVECTOR4 v;
-		UMGetCameraFovLH(&v);
-		return v.y;
-	}
-
-	float get_camera_near()
-	{
-		D3DXVECTOR4 v;
-		UMGetCameraFovLH(&v);
-		return v.z;
-	}
-
-	float get_camera_far()
-	{
-		D3DXVECTOR4 v;
-		UMGetCameraFovLH(&v);
-		return v.w;
-	}
-	
-	int get_frame_number()
-	{
-		if (process_frame >= 0) 
-		{
-			return process_frame;
-		}
-		else
-		{
-			return ui_frame;
-		}
-	}
-
-	int get_start_frame()
-	{
-		return BridgeParameter::instance().start_frame;
-	}
-	
-	int get_end_frame()
-	{
-		return BridgeParameter::instance().end_frame;
-	}
-
-	int get_frame_width()
-	{
-		return BridgeParameter::instance().frame_width;
-	}
-
-	int get_frame_height()
-	{
-		return BridgeParameter::instance().frame_height;
-	}
-
-	boost::python::list get_light(int at)
-	{
-		const UMVec3f &light = BridgeParameter::instance().render_buffer(at).light;
-		boost::python::list result;
-		result.append(light.x);
-		result.append(light.y);
-		result.append(light.z);
-		return result;
-	}
-
-	boost::python::list get_light_color(int at)
-	{
-		const UMVec3f &light = BridgeParameter::instance().render_buffer(at).light_color;
-		boost::python::list result;
-		result.append(light.x);
-		result.append(light.y);
-		result.append(light.z);
-		return result;
-	}
-
-	int get_object_size()
-	{
-		return ExpGetPmdNum();
-	}
-
-	int get_bone_size(int at)
-	{
-		return ExpGetPmdBoneNum(at);
-	}
-
-	boost::python::object get_object_filename(int at)
-	{
-		const int count = get_bone_size(at);
-		if (count <= 0) return boost::python::object();
-		const char* sjis = ExpGetPmdFilename(at);
-		const int size = ::MultiByteToWideChar(CP_ACP, 0, (LPCSTR)sjis, -1, NULL, 0);
-		wchar_t* utf16 = new wchar_t[size];
-		::MultiByteToWideChar(CP_ACP, 0, (LPCSTR)sjis, -1, (LPWSTR)utf16, size);
-		std::wstring wchar(utf16);
-		delete [] utf16;
-		std::string utf8str = umbase::UMStringUtil::wstring_to_utf8(wchar);
-
-		boost::python::object result(boost::python::handle<>(
-			PyUnicode_FromString(utf8str.c_str())));
-		return result;
-	}
-
-	boost::python::object get_bone_name(int at, int bone_index)
-	{
-		const int count = get_bone_size(at);
-		if (count <= 0) return boost::python::object();
-		const char* sjis = ExpGetPmdBoneName(at, bone_index);
-		const int size = ::MultiByteToWideChar(CP_ACP, 0, (LPCSTR)sjis, -1, NULL, 0);
-		wchar_t* utf16 = new wchar_t[size];
-		::MultiByteToWideChar(CP_ACP, 0, (LPCSTR)sjis, -1, (LPWSTR)utf16, size);
-		std::wstring wchar(utf16);
-		delete [] utf16;
-		std::string utf8str = umbase::UMStringUtil::wstring_to_utf8(wchar);
-
-		boost::python::object result(boost::python::handle<>(
-			PyUnicode_FromString(utf8str.c_str())));
-		return result;
-	}
-
-	boost::python::list get_bone_matrix(int at, int bone_index)
-	{
-		const int count = get_bone_size(at);
-		boost::python::list result;
-		if (count <= 0) return result;
-
-		D3DMATRIX mat = ExpGetPmdBoneWorldMat(at, bone_index);
-		for (int i = 0; i < 4; ++i)
-		{
-			for (int k = 0; k < 4; ++k)
-			{
-				result.append(mat.m[i][k]);
-			}
-		}
-		return result;
-	}
-
-	boost::python::list get_world(int at)
-	{
-		const D3DXMATRIX& world = BridgeParameter::instance().render_buffer(at).world;
-		boost::python::list result;
-		for (int i = 0; i < 4; ++i)
-		{
-			for (int k = 0; k < 4; ++k)
-			{
-				result.append(world.m[i][k]);
-			}
-		}
-		return result;
-	}
-
-	boost::python::list get_world_inv(int at)
-	{
-		const D3DXMATRIX& world_inv = BridgeParameter::instance().render_buffer(at).world_inv;
-		boost::python::list result;
-		for (int i = 0; i < 4; ++i)
-		{
-			for (int k = 0; k < 4; ++k)
-			{
-				result.append(world_inv.m[i][k]);
-			}
-		}
-		return result;
-	}
-
-	boost::python::list get_view(int at)
-	{
-		const D3DXMATRIX& view = BridgeParameter::instance().render_buffer(at).view;
-		boost::python::list result;
-		for (int i = 0; i < 4; ++i)
-		{
-			for (int k = 0; k < 4; ++k)
-			{
-				result.append(view.m[i][k]);
-			}
-		}
-		return result;
-	}
-
-	boost::python::list get_projection(int at)
-	{
-		const D3DXMATRIX& projection = BridgeParameter::instance().render_buffer(at).projection;
-		boost::python::list result;
-		for (int i = 0; i < 4; ++i)
-		{
-			for (int k = 0; k < 4; ++k)
-			{
-				result.append(projection.m[i][k]);
-			}
-		}
-		return result;
-	}
-
-	boost::python::list invert_matrix(boost::python::object p)
-	{
-		const boost::python::list tp1 = extract<list>(p)();
-		if (len(tp1) < 16) {
-			PyErr_SetString(PyExc_IndexError, "index out of range");
-			throw boost::python::error_already_set();
-		}
-		boost::python::list result;
-		UMMat44d src;
-		for (int i = 0; i < 4; ++i) {
-			for (int k = 0; k < 4; ++k) {
-				src[i][k] = extract<double>(tp1[i * 4 + k]);
-			}
-		}
-		const UMMat44d dst = src.inverted();
-		for (int i = 0; i < 4; ++i) {
-			for (int k = 0; k < 4; ++k) {
-				result.append(dst[i][k]);
-			}
-		}
-		return result;
-	}
-
-	boost::python::list extract_xyz_degree(boost::python::object p)
-	{
-		const boost::python::list tp1 = extract<list>(p)();
-		if (len(tp1) < 16) {
-			PyErr_SetString(PyExc_IndexError, "index out of range");
-			throw boost::python::error_already_set();
-		}
-		boost::python::list result;
-		UMMat44d src;
-		for (int i = 0; i < 4; ++i) {
-			for (int k = 0; k < 4; ++k) {
-				src[i][k] = extract<double>(tp1[i * 4 + k]);
-			}
-		}
-
-		const UMVec3d euler = umbase::um_matrix_to_euler_xyz(src);
-		for (int i = 0; i < 3; ++i) {
-			result.append(umbase::um_to_degree(euler[i]));
-		}
-		return result;
-	}
-
-	bool set_texture_buffer_enabled(bool enabled)
-	{
-		BridgeParameter::mutable_instance().is_texture_buffer_enabled = enabled;
-		return true;
-	}
-
-	bool set_int_value(int pos, int value)
-	{
-		BridgeParameter::mutable_instance().py_int_map[pos] = value;
-		return true;
-	}
-
-	bool set_float_value(int pos, float value)
-	{
-		BridgeParameter::mutable_instance().py_float_map[pos] = value;
-		return true;
-	}
-
-	int get_int_value(int pos)
-	{
-		if (BridgeParameter::instance().py_int_map.find(pos) != BridgeParameter::instance().py_int_map.end())
-		{
-			return BridgeParameter::mutable_instance().py_int_map[pos];
-		}
-		return 0;
-	}
-
-	float get_float_value(int pos)
-	{
-		if (BridgeParameter::instance().py_float_map.find(pos) != BridgeParameter::instance().py_float_map.end())
-		{
-			return BridgeParameter::mutable_instance().py_float_map[pos];
-		}
-		return 0;
-	}
-
-	boost::python::list d3dx_vec3_normalize(float x, float y, float z)
-	{
-		D3DXVECTOR3 vec(x, y, z);
-		::D3DXVec3Normalize(&vec, &vec);
-		boost::python::list result;
-		result.append(vec.x);
-		result.append(vec.y);
-		result.append(vec.z);
-		return result;
-	}
-
-	object init_python()
-	{
-		object main_module = import("__main__");
-		object main_namespace = main_module.attr("__dict__");
-		return main_namespace;
-	}
-	
-	std::string parse_python_exception()
-	{
-		PyObject *type_ptr = NULL;
-		PyObject *value_ptr = NULL;
-		PyObject *traceback_ptr = NULL;
-		PyErr_Fetch(&type_ptr, &value_ptr, &traceback_ptr);
-
-		std::string ret("Fallback error");
-		if(type_ptr != NULL)
-		{
-			boost::python::handle<> h_type(type_ptr);
-			boost::python::str type_pstr(h_type);
-			boost::python::extract<std::string> e_type_pstr(type_pstr);
-			if(e_type_pstr.check())
-			{
-				ret = e_type_pstr();
-			}
-			else
-			{
-				ret = "Unknown exception";
-			}
-		}
-		if(value_ptr != NULL){
-			boost::python::handle<> h_val(value_ptr);
-			boost::python::str a(h_val);
-			boost::python::extract<std::string> returned(a);
-			if(returned.check()) 
-			{
-				ret +=  ": " + returned();
-			}
-			else
-			{
-				ret += std::string(": Unparseable Python error: ");
-			}
-		}
-		if(traceback_ptr != NULL)
-		{
-			boost::python::handle<> h_tb(traceback_ptr);
-			boost::python::object tb(boost::python::import("traceback"));
-			boost::python::object fmt_tb(tb.attr("format_tb"));
-			boost::python::object tb_list(fmt_tb(h_tb));
-			boost::python::object tb_str(boost::python::str("\n").join(tb_list));
-			boost::python::extract<std::string> returned(tb_str);
-			if(returned.check()) 
-			{
-				ret += ": " + returned();
-			}
-			else
-			{
-				ret += std::string(": Unparseable Python traceback");
-			}
-		}
-		return ret;
-	}
-}
-
-
-BOOST_PYTHON_MODULE( mmdbridge )
-{
-	using namespace boost::python;
-	def("get_vertex_buffer_size", get_vertex_buffer_size);
-	def("get_vertex_size", get_vertex_size);
-	def("get_vertex", get_vertex);
-	def("get_normal_size", get_normal_size);
-	def("get_normal", get_normal);
-	def("get_uv_size", get_uv_size);
-	def("get_uv", get_uv);
-	def("get_material_size", get_material_size);
-	def("is_accessory", is_accessory);
-	def("get_pre_accessory_count", get_pre_accessory_count);
-	def("get_ambient", get_ambient);
-	def("get_diffuse", get_diffuse);
-	def("get_specular", get_specular);
-	def("get_emissive", get_emissive);
-	def("get_power", get_power);
-	def("get_texture", get_texture);
-	def("get_exported_texture", get_exported_texture);
-	def("get_face_size", get_face_size);
-	def("get_face", get_face);
-	def("get_texture_buffer_size", get_texture_buffer_size);
-	def("get_texture_size", get_texture_size);
-	def("get_texture_name", get_texture_name);
-	def("get_texture_pixel", get_texture_pixel);
-	def("get_camera_up", get_camera_up);
-	def("get_camera_up_org", get_camera_up_org);
-	def("get_camera_at",  get_camera_at);
-	def("get_camera_eye",  get_camera_eye);
-	def("get_camera_eye_org",  get_camera_eye_org);
-	def("get_camera_fovy", get_camera_fovy);
-	def("get_camera_aspect", get_camera_aspect);
-	def("get_camera_near", get_camera_near);
-	def("get_camera_far", get_camera_far);
-	def("messagebox", message);
-	def("export_texture", export_texture);
-	def("export_textures", export_textures);
-	def("export_uncopied_textures", export_textures);
-	def("copy_textures", copy_textures);
-	def("get_frame_number", get_frame_number);
-	def("get_start_frame", get_start_frame);
-	def("get_end_frame", get_end_frame);
-	def("get_frame_width", get_frame_width);
-	def("get_frame_height", get_frame_height);
-	def("get_base_path", get_base_path);
-	def("get_light", get_light);
-	def("get_light_color", get_light_color);
-	def("get_object_size", get_object_size);
-	def("get_object_filename", get_object_filename);
-	def("get_bone_size", get_bone_size);
-	def("get_bone_name", get_bone_name);
-	def("get_bone_matrix", get_bone_matrix);
-	def("get_world", get_world);
-	def("get_world_inv", get_world_inv);
-	def("get_view", get_view);
-	def("get_projection", get_projection);
-	def("set_texture_buffer_enabled", set_texture_buffer_enabled);
-	def("set_int_value", set_int_value);
-	def("set_float_value", set_float_value);
-	def("get_int_value", get_int_value);
-	def("get_float_value", get_float_value);
-	def("extract_xyz_degree", extract_xyz_degree);
-	def("invert_matrix", invert_matrix);
-	def("d3dx_vec3_normalize", d3dx_vec3_normalize);
-}
-
-void run_python_script()
-{
-	relaod_python_script();
-	if (BridgeParameter::instance().mmdbridge_python_script.empty()) { return; }
-
-	if (Py_IsInitialized())
-	{
-		//
-		PyEval_InitThreads();
-		Py_InspectFlag = 0;
-		
-		if (script_call_setting > 1)
-		{
-			script_call_setting = 0;
-		}
-	}
-	else
-	{
-		InitAlembic();
-		InitVMD();
-		InitPMX();
-		InitOptix();
-		PyImport_AppendInittab("mmdbridge", PyInit_mmdbridge);
-		Py_Initialize();
-			
-		// 入力引数の設定
-		{
-			int argc = 1;
-			const std::wstring wpath = BridgeParameter::instance().base_path;
-			wchar_t *path[] = {
-				const_cast<wchar_t*>(wpath.c_str())
-			};
-			PySys_SetArgv(argc, path);
-		}
-	}
-
-	try
-	{
-		// モジュール初期化.
-		boost::python::object main_namespace = init_python();
-		// スクリプトの実行.
-		boost::python::object res = boost::python::exec(
-			BridgeParameter::instance().mmdbridge_python_script.c_str(),
-			main_namespace);
-	}
-	catch(error_already_set const& )
-	{
-		std::string python_error_string = parse_python_exception();
-		::MessageBoxA(NULL, python_error_string.c_str(), "python error", MB_OK);
-	}
-}
 //-----------------------------------------------------------Hook関数ポインタ-----------------------------------------------------------
 
 // Direct3DCreate9
@@ -1183,25 +274,15 @@ static HRESULT WINAPI beginScene(IDirect3DDevice9 *device)
 {
 	HRESULT res = (*original_begin_scene)(device);
 
-	BridgeParameter& parameter = BridgeParameter::mutable_instance();
-	D3DVIEWPORT9 viewport;
-	device->lpVtbl->GetViewport(device, &viewport);
-	parameter.viewport_width = viewport.Width;
-	parameter.viewport_height = viewport.Height;
-
 	return res;
 }
 
 static HRESULT WINAPI endScene(IDirect3DDevice9 *device)
 {
 	HRESULT res = (*original_end_scene)(device);
-
 	BridgeParameter& parameter = BridgeParameter::mutable_instance();
-	static bool init = false;
-	if (!init) {
-		D3DXCreateTexture(device, parameter.viewport_width, parameter.viewport_height, 0
-			, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &parameter.preview_tex);
-		init = true;
+	if (!parameter.preview_tex) {
+		return res;
 	}
 	// 頂点フォーマットの定義
 	struct  VTX
@@ -1221,10 +302,10 @@ static HRESULT WINAPI endScene(IDirect3DDevice9 *device)
 	// 頂点を準備
 	VTX vertex[4] =
 	{
-		{ x0, y0, 0, 1.0f, 0xFFFFFFFF, 0, 0 },    //左上
-		{ x1, y0, 0, 1.0f, 0xFFFFFFFF, 1, 0 },    //右上
-		{ x0, y1, 0, 1.0f, 0xFFFFFFFF, 0, 1 },    //左下
-		{ x1, y1, 0, 1.0f, 0xFFFFFFFF, 1, 1 },    //右下
+		{ x0, y0, 0, 1.0f, 0x88FFFFFF, 0, 0 },    //左上
+		{ x1, y0, 0, 1.0f, 0x88FFFFFF, 1, 0 },    //右上
+		{ x0, y1, 0, 1.0f, 0x88FFFFFF, 0, 1 },    //左下
+		{ x1, y1, 0, 1.0f, 0x88FFFFFF, 1, 1 },    //右下
 	};
 	UINT numPass = 0;
 
@@ -1407,15 +488,6 @@ static INT_PTR CALLBACK DialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 				case IDOK: // ボタンが押されたとき
 					{
 						UINT num1 = (UINT)SendMessage(hCombo1, CB_GETCURSEL, 0, 0);
-						if (num1 < parameter.python_script_name_list.size())
-						{
-							if (pythonName != parameter.python_script_name_list[num1])
-							{
-								pythonName = parameter.python_script_name_list[num1];
-								mutable_parameter.python_script_path = parameter.python_script_path_list[num1];
-								relaod_python_script();
-							}
-						}
 						UINT num2 = (UINT)SendMessage(hCombo2, CB_GETCURSEL, 0, 0);
 						if (num2 <= 2)
 						{
@@ -1442,10 +514,6 @@ static INT_PTR CALLBACK DialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 					break;
 				case IDCANCEL:
 					EndDialog(hWnd, IDCANCEL);
-					break;
-				case IDC_BUTTON1: // 再検索
-					reload_python_file_paths();
-					SendMessage(hCombo1, CB_SETCURSEL, SendMessage(hCombo1, CB_FINDSTRINGEXACT, -1, (LPARAM)pythonName.c_str()), 0);
 					break;
 			}
 			break;
@@ -1489,6 +557,11 @@ static bool IsValidTechniq() {
 	return (technic == 0 || technic == 1 || technic == 2);
 }
 
+static int get_vertex_buffer_size()
+{
+	return BridgeParameter::instance().finish_buffer_list.size();
+}
+
 static HRESULT WINAPI present(
 	IDirect3DDevice9 *device, 
 	const RECT * pSourceRect, 
@@ -1503,6 +576,25 @@ static HRESULT WINAPI present(
 		BridgeParameter::mutable_instance().frame_width = pDestRect->right - pDestRect->left;
 		BridgeParameter::mutable_instance().frame_height = pDestRect->bottom - pDestRect->top;
 	}
+
+	BridgeParameter& parameter = BridgeParameter::mutable_instance();
+	D3DVIEWPORT9 viewport;
+	device->lpVtbl->GetViewport(device, &viewport);
+	if (parameter.viewport_width != viewport.Width || parameter.viewport_height != viewport.Height)
+	{
+		parameter.viewport_width = viewport.Width;
+		parameter.viewport_height = viewport.Height;
+
+		if (parameter.preview_tex)
+		{
+			parameter.preview_tex->lpVtbl->Release(parameter.preview_tex);
+			parameter.preview_tex = NULL;
+		}
+
+		D3DXCreateTexture(device, parameter.viewport_width, parameter.viewport_height, 0
+			, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &parameter.preview_tex);
+	}
+
 	BridgeParameter::mutable_instance().is_exporting_without_mesh = false;
 	overrideGLWindow();
 	const bool validFrame = IsValidFrame();
@@ -2460,9 +1552,6 @@ bool d3d9_initialize()
 		BridgeParameter::mutable_instance().base_path = path.substr(0, path.rfind(_T("MikuMikuDance.exe")));
 	}
 
-	reload_python_file_paths();
-	relaod_python_script();
-
 	// システムパス保存用
 	TCHAR system_path_buffer[1024];
 	GetSystemDirectory(system_path_buffer, MAX_PATH );
@@ -2491,9 +1580,6 @@ bool d3d9_initialize()
 void d3d9_dispose() 
 {
 	renderData.dispose();
-	DisposePMX();
-	DisposeVMD();
-	DisposeAlembic();
 }
 
 // DLLエントリポイント

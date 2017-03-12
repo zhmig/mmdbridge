@@ -178,7 +178,7 @@
     <ClCompile>
       <Optimization>Disabled</Optimization>
       <IntrinsicFunctions>false</IntrinsicFunctions>
-      <AdditionalIncludeDirectories>C:\Program Files (x86)\Microsoft SDKs\Windows\v7.1A\Include;$(SolutionDir)/src/d3dx9_32;$(SolutionDir)/src/umbase;C:\Program Files (x86)\Microsoft DirectX SDK (April 2006)\Include;$(SolutionDir)/src/($ProjectName);$(SolutionDir)/libs/python/include;$(SolutionDir)/libs/ilmbase2/include;$(SolutionDir)/libs/ilmbase2/include/config.windows;$(SolutionDir)/libs/ilmbase2/include/Half;$(SolutionDir)/libs/ilmbase2/include/Iex;$(SolutionDir)/libs/ilmbase2/include/IexMath;$(SolutionDir)/libs/ilmbase2/include/IlmThread;$(SolutionDir)/libs/ilmbase2/include/Imath;$(SolutionDir)/libs/alembic/include;$(SolutionDir)/libs/hdf5/include;$(SolutionDir)/libs/avi20/include;$(SolutionDir)/libs/boost/include;$(SolutionDir)/libs/mmd/include;$(SolutionDir)/libs/stb/include;$(SolutionDir)/libs/MikuMikuFormats/include;$(SolutionDir)/libs/optix/include;$(SolutionDir)/libs/;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\include;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\SDK\sutil;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\SDK;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\include\optixu;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\SDK\build;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v7.0\include;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\SDK\support\freeglut\include;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\SDK\cuda;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Program Files (x86)\Microsoft SDKs\Windows\v7.1A\Include;$(SolutionDir)/src/d3dx9_32;$(SolutionDir)/src/umbase;C:\Program Files (x86)\Microsoft DirectX SDK (April 2006)\Include;$(SolutionDir)/src/($ProjectName);$(SolutionDir)/libs/mmd/include;$(SolutionDir)/libs/stb/include;$(SolutionDir)/libs/optix/include;$(SolutionDir)/libs/;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\include;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\SDK\sutil;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\SDK;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\include\optixu;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\SDK\build;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v7.0\include;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\SDK\support\freeglut\include;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\SDK\cuda;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;WIN32;BOOST_PYTHON_STATIC_LIB;NDEBUG;_WINDOWS;HOOK_EXPORTS;WITH_ALEMBIC;WITH_VMD;WITH_PMX;WITH_AVI;_CRT_SECURE_NO_WARNINGS;PLATFORM_WINDOWS;WITH_OPTIX;_USE_MATH_DEFINES;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -197,9 +197,9 @@
       <ResourceOutputFileName>%(Filename).res</ResourceOutputFileName>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>MMDExport.lib;shlwapi.lib;d3dx9_43.lib;winmm.lib;MikuMikuFormats.lib;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\lib64\optix.1.lib;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\lib64\optixu.1.lib;optix.1.lib;optix_prime.1.lib;optixu.1.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>MMDExport.lib;shlwapi.lib;d3dx9_43.lib;winmm.lib;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\lib64\optix.1.lib;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\lib64\optixu.1.lib;optix.1.lib;optix_prime.1.lib;optixu.1.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <OutputFile>$(OutDir)$(ProjectName)_.dll</OutputFile>
-      <AdditionalLibraryDirectories>C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)\Lib\x64;$(SolutionDir)libs/python/$(Platform)/$(Configuration)/;$(SolutionDir)libs/boost/$(Platform)/$(Configuration)/;$(SolutionDir)libs/alembic/$(Platform)/$(Configuration)/;$(SolutionDir)libs/hdf5/$(Platform)/$(Configuration)/;$(SolutionDir)libs/ilmbase2/$(Platform)/$(Configuration)/;$(SolutionDir)libs/zlib/$(Platform)/$(Configuration)/;$(SolutionDir)/libs/umio/$(Platform)/$(Configuration)/;$(SolutionDir)/libs/mmd/$(Platform)/;$(SolutionDir)/Release/$(Platform)/;$(SolutionDir)/src/d3dx9_32;$(SolutionDir)libs/MikuMikuFormats/$(Platform)/$(Configuration)/;$(SolutionDir)libs/optix/$(Platform)/$(Configuration)/;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)\Lib\x64;$(SolutionDir)/libs/mmd/$(Platform)/;$(SolutionDir)/Release/$(Platform)/;$(SolutionDir)/src/d3dx9_32;$(SolutionDir)libs/optix/$(Platform)/$(Configuration)/;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <ModuleDefinitionFile>$(SolutionDir)/src/$(ProjectName)/hook.def</ModuleDefinitionFile>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
@@ -234,24 +234,18 @@
     <ResourceCompile Include="..\..\src\d3d9\d3d9.rc" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\..\src\d3d9\alembic.h" />
     <ClInclude Include="..\..\src\d3d9\bridge_parameter.h" />
     <ClInclude Include="..\..\src\d3d9\d3d9.h" />
     <ClInclude Include="..\..\src\d3d9\optix.h" />
-    <ClInclude Include="..\..\src\d3d9\pmx.h" />
     <ClInclude Include="..\..\src\d3d9\resource.h" />
     <ClInclude Include="..\..\src\d3d9\stb_image.h" />
     <ClInclude Include="..\..\src\d3d9\stb_image_write.h" />
     <ClInclude Include="..\..\src\d3d9\tinyexr.h" />
-    <ClInclude Include="..\..\src\d3d9\vmd.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\src\d3d9\alembic.cpp" />
     <ClCompile Include="..\..\src\d3d9\bridge_parameter.cpp" />
     <ClCompile Include="..\..\src\d3d9\d3d9.cpp" />
     <ClCompile Include="..\..\src\d3d9\optix.cpp" />
-    <ClCompile Include="..\..\src\d3d9\pmx.cpp" />
-    <ClCompile Include="..\..\src\d3d9\vmd.cpp" />
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="..\..\src\d3d9\constantbg.cu" />
