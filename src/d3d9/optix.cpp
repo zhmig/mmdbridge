@@ -613,7 +613,7 @@ static void loadGeometry()
 
 	// MMDメッシュの設定
 	const BridgeParameter& parameter = BridgeParameter::instance();
-	const VertexBufferList& finishBuffers = BridgeParameter::instance().finish_buffer_list;
+	const IndexBufferList& finishBuffers = BridgeParameter::instance().finish_buffer_list;
 	mmd_mesh_list.resize(finishBuffers.size());
 	for (int i = 0, isize = static_cast<int>(finishBuffers.size()); i < isize; ++i)
 	{
@@ -649,7 +649,7 @@ static void loadGeometryPT()
 
 	// MMDメッシュの設定
 	const BridgeParameter& parameter = BridgeParameter::instance();
-	const VertexBufferList& finishBuffers = BridgeParameter::instance().finish_buffer_list;
+	const IndexBufferList& finishBuffers = BridgeParameter::instance().finish_buffer_list;
 	mmd_mesh_list.resize(finishBuffers.size());
 	for (int i = 0, isize = static_cast<int>(finishBuffers.size()); i < isize; ++i)
 	{
@@ -762,7 +762,7 @@ static void updateCamera(const RenderedBuffer & renderedBuffer, int currentframe
 	camera_changed = false;
 }
 
-static void updatePreview(RTbuffer buffer, float gamma)
+static void updatePreview(optix::Buffer buffer, float gamma)
 {
 	BridgeParameter& parameter = BridgeParameter::mutable_instance();
 	if (!parameter.preview_tex) {
@@ -770,11 +770,13 @@ static void updatePreview(RTbuffer buffer, float gamma)
 	}
 
 	RTsize width, height;
-	rtBufferGetSize2D(buffer, &width, &height);
+	rtBufferGetSize2D(buffer->get(), &width, &height);
 
 	void* data;
-	rtBufferMap(buffer, &data);
-
+	rtBufferMap(buffer->get(), &data);
+	if (!data) {
+		return;
+	}
 	std::vector<unsigned char> image_buffer(width * height * 4);
 	// This buffer is upside down
 	for (int y = height - 1; y >= 0; --y) {
@@ -800,7 +802,7 @@ static void updatePreview(RTbuffer buffer, float gamma)
 		parameter.preview_tex->lpVtbl->UnlockRect(parameter.preview_tex, 0);
 	}
 
-	rtBufferUnmap(buffer);
+	rtBufferUnmap(buffer->get());
 }
 static void saveImage(const char* filename, RTbuffer buffer)
 {
@@ -932,7 +934,7 @@ static void execute_optix_export(int currentframe)
 	if (!context) return;
 
 	const BridgeParameter& parameter = BridgeParameter::instance();
-	const VertexBufferList& finishBuffers = BridgeParameter::instance().finish_buffer_list;
+	const IndexBufferList& finishBuffers = BridgeParameter::instance().finish_buffer_list;
 	const RenderBufferMap& renderBuffers = BridgeParameter::instance().render_buffer_map;
 
 	RTsize width, height;
@@ -960,7 +962,7 @@ static void execute_optix_export(int currentframe)
 	//std::string file = umbase::UMStringUtil::wstring_to_utf8(parameter.base_path) + ("out\\frame_")
 	//	+ umbase::UMStringUtil::number_to_string(currentframe) + ".png";
 	//saveImage(file.c_str(), getOutputBuffer()->get());
-	updatePreview(buffer->get(), 2.2f);
+	updatePreview(buffer, 2.2f);
 }
 
 static void end_optix_export()
@@ -1002,7 +1004,7 @@ void UpdateOptix(int currentframe)
 void UpdateOptixGeometry()
 {
 	const BridgeParameter& parameter = BridgeParameter::instance();
-	const VertexBufferList& finishBuffers = BridgeParameter::instance().finish_buffer_list;
+	const IndexBufferList& finishBuffers = BridgeParameter::instance().finish_buffer_list;
 	for (int i = 0, isize = static_cast<int>(finishBuffers.size()); i < isize; ++i)
 	{
 		const RenderedBuffer &renderedBuffer = parameter.render_buffer(i);
@@ -1011,17 +1013,8 @@ void UpdateOptixGeometry()
 	geometry_group->getAcceleration()->markDirty();
 }
 
-// ---------------------------------------------------------------------------
-//BOOST_PYTHON_MODULE(mmdbridge_optix)
-//{
-//	using namespace boost::python;
-//	def("start_optix_export", start_optix_export);
-//	def("execute_optix_export", execute_optix_export);
-//	def("end_optix_export", end_optix_export);
-//}
 
 #endif //WITH_OPTIX
-
 
 // ---------------------------------------------------------------------------
 #ifdef WITH_OPTIX

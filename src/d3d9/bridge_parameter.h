@@ -55,7 +55,7 @@ public:
 	/// スクリプトからの一時保存値(float)
 	std::map<int, float> py_float_map;
 	
-	VertexBufferList finish_buffer_list;
+	IndexBufferList finish_buffer_list;
 	RenderBufferMap render_buffer_map;
 
 	const RenderedBuffer& render_buffer(int finish_buffer_index) const;

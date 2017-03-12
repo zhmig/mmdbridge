@@ -65,14 +65,6 @@ std::map<IDirect3DTexture9*, RenderedTexture> renderedTextures;
 std::map<int, std::map<int , RenderedMaterial*> > renderedMaterials;
 //-----------------------------------------------------------------------------------------------------------------
 
-static bool writeTextureToFile(const std::string &texturePath, IDirect3DTexture9 * texture, D3DXIMAGE_FILEFORMAT fileFormat);
-
-static bool writeTextureToFiles(const std::string &texturePath, const std::string &textureType, bool uncopied = false);
-
-static bool copyTextureToFiles(const std::u16string &texturePath);
-
-static bool writeTextureToMemory(const std::string &textureName, IDirect3DTexture9 * texture, bool copied);
-
 //------------------------------------------Python呼び出し--------------------------------------------------------
 static int pre_frame = 0;
 static int presentCount = 0;
@@ -80,6 +72,19 @@ static int process_frame = -1;
 static int ui_frame = 0;
 int script_call_setting = 2; // スクリプト呼び出し設定
 std::map<int, int> exportedFrames;
+
+struct PrimitiveInfo
+{
+	D3DPRIMITIVETYPE type;
+	INT baseVertexIndex;
+	UINT minIndex;
+	UINT numVertices;
+	UINT startIndex;
+	UINT primitiveCount;
+	RenderData renderData;
+};
+
+static std::vector<PrimitiveInfo> primitveInfoList;
 
 //-----------------------------------------------------------Hook関数ポインタ-----------------------------------------------------------
 
@@ -131,7 +136,26 @@ HRESULT (WINAPI *original_set_texture)(IDirect3DDevice9*, DWORD, IDirect3DBaseTe
 HRESULT (WINAPI *original_create_texture)(IDirect3DDevice9*, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DTexture9**, HANDLE*)(NULL);
 //-----------------------------------------------------------------------------------------------------------------------------
 
-static bool writeTextureToFile(const std::string &texturePath, IDirect3DTexture9 * texture, D3DXIMAGE_FILEFORMAT fileFormat)
+static bool writeTextureToFile(const std::string &texturePath, IDirect3DTexture9 * texture, D3DXIMAGE_FILEFORMAT fileFormat, RenderData& renderData);
+
+static bool writeTextureToFiles(const std::string &texturePath, const std::string &textureType, RenderData& renderData, bool uncopied = false);
+
+static bool copyTextureToFiles(const std::u16string &texturePath, RenderData& renderData);
+
+static bool writeTextureToMemory(const std::string &textureName, IDirect3DTexture9 * texture, bool copied, RenderData& renderData);
+
+
+static void getTextureParameter(TextureParameter &param, RenderData& renderData);
+static bool writeBuffersToMemory(IDirect3DDevice9 *device, RenderData& renderData);
+static bool writeMaterialsToMemory(TextureParameter & textureParameter, RenderData& renderData);
+static void writeMatrixToMemory(IDirect3DDevice9 *device, RenderedBuffer &dst);
+static void writeLightToMemory(IDirect3DDevice9 *device, RenderedBuffer &renderedBuffer);
+
+static void drawPreview(IDirect3DDevice9 *device);
+//-----------------------------------------------------------------------------------------------------------------------------
+
+
+static bool writeTextureToFile(const std::string &texturePath, IDirect3DTexture9 * texture, D3DXIMAGE_FILEFORMAT fileFormat, RenderData& renderData)
 {
 	TextureBuffers::iterator tit = renderData.textureBuffers.find(texture);
 	if(tit != renderData.textureBuffers.end())
@@ -144,7 +168,7 @@ static bool writeTextureToFile(const std::string &texturePath, IDirect3DTexture9
 	return false;
 }
 
-static bool writeTextureToFiles(const std::string &texturePath, const std::string &textureType, bool uncopied)
+static bool writeTextureToFiles(const std::string &texturePath, const std::string &textureType, RenderData& renderData, bool uncopied)
 {
 	bool res = true;
 
@@ -175,12 +199,12 @@ static bool writeTextureToFiles(const std::string &texturePath, const std::strin
 				{
 					char path[MAX_PATH];
 					PathCombineA(path, dir, to_string(texture).c_str());
-					if (!writeTextureToFile(std::string(path) + "." + textureType, texture, fileFormat)) { res = false; }
+					if (!writeTextureToFile(std::string(path) + "." + textureType, texture, fileFormat, renderData)) { res = false; }
 				}
 			} else {
 				char path[MAX_PATH];
 				PathCombineA(path, dir, to_string(texture).c_str());
-				if (!writeTextureToFile(std::string(path) + "." + textureType, texture, fileFormat)) { res = false; }
+				if (!writeTextureToFile(std::string(path) + "." + textureType, texture, fileFormat, renderData)) { res = false; }
 			}
 		}
 	}
@@ -208,7 +232,7 @@ static bool copyTextureToFiles(const std::u16string &texturePath)
 	return res;
 }
 
-static bool writeTextureToMemory(const std::string &textureName, IDirect3DTexture9 * texture, bool copied)
+static bool writeTextureToMemory(const std::string &textureName, IDirect3DTexture9 * texture, bool copied, RenderData& renderData)
 {
 	// すでにfinishTexutureBufferにあるかどうか
 	bool found = false;
@@ -280,53 +304,6 @@ static HRESULT WINAPI beginScene(IDirect3DDevice9 *device)
 static HRESULT WINAPI endScene(IDirect3DDevice9 *device)
 {
 	HRESULT res = (*original_end_scene)(device);
-	BridgeParameter& parameter = BridgeParameter::mutable_instance();
-	if (!parameter.preview_tex) {
-		return res;
-	}
-	// 頂点フォーマットの定義
-	struct  VTX
-	{
-		float       x, y, z;
-		float       rhw;
-		D3DCOLOR    color;
-		float       tu, tv;
-	};
-	D3DVIEWPORT9 viewport;
-	device->lpVtbl->GetViewport(device, &viewport);
-	const int x0 = viewport.X - 1;
-	const int y0 = viewport.Y - 1;
-	const int x1 = x0 + viewport.Width + 1;
-	const int y1 = y0 + viewport.Height + 1;
-
-	// 頂点を準備
-	VTX vertex[4] =
-	{
-		{ x0, y0, 0, 1.0f, 0x88FFFFFF, 0, 0 },    //左上
-		{ x1, y0, 0, 1.0f, 0x88FFFFFF, 1, 0 },    //右上
-		{ x0, y1, 0, 1.0f, 0x88FFFFFF, 0, 1 },    //左下
-		{ x1, y1, 0, 1.0f, 0x88FFFFFF, 1, 1 },    //右下
-	};
-	UINT numPass = 0;
-
-	device->lpVtbl->SetTexture(device, 0, reinterpret_cast<IDirect3DBaseTexture9*>(parameter.preview_tex));
-
-	device->lpVtbl->SetTextureStageState(device, 0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-	device->lpVtbl->SetTextureStageState(device, 0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-
-	device->lpVtbl->SetTextureStageState(device, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-
-	device->lpVtbl->SetTextureStageState(device, 0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-	device->lpVtbl->SetTextureStageState(device, 0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
-
-	// 頂点フォーマットの設定
-	device->lpVtbl->SetFVF(device, D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
-	// 描画処理
-
-	device->lpVtbl->SetRenderState(device, D3DRS_ZENABLE, D3DZB_FALSE);
-	device->lpVtbl->DrawPrimitiveUP(device, D3DPT_TRIANGLESTRIP, 2, vertex, sizeof(VTX));
-	device->lpVtbl->SetRenderState(device, D3DRS_ZENABLE, D3DZB_TRUE);
-
 	return res;
 
 }
@@ -544,17 +521,208 @@ static bool IsValidFrame() {
 	//HWND recWindow = FindWindowA("RecWindow", NULL);
 	//return (recWindow != NULL);
 }
-
+static bool IsRecWindow() {
+	HWND recWindow = FindWindowA("RecWindow", NULL);
+	return (recWindow != NULL);
+}
 static int pre_buffer_size = 0;
 static D3DXMATRIX pre_world;
 static D3DXVECTOR3 pre_eye;
 static D3DXVECTOR4 pre_fov;
 static int frame_for_pt = 0;
-
+static bool isRecWindow = false;
 
 static bool IsValidTechniq() {
 	const int technic = ExpGetCurrentTechnic();
 	return (technic == 0 || technic == 1 || technic == 2);
+}
+
+static void updatePrimitive(IDirect3DDevice9 *device, PrimitiveInfo& info)
+{
+	const int currentMaterial = ExpGetCurrentMaterial();
+	const int currentObject = ExpGetCurrentObject();
+
+	const bool validCallSetting = IsValidCallSetting();
+	const bool validFrame = IsValidFrame();
+	const bool validTechniq = IsValidTechniq();
+	const bool validBuffer = (!BridgeParameter::instance().is_exporting_without_mesh);
+
+	if (validBuffer && validCallSetting && validFrame && validTechniq && info.type == D3DPT_TRIANGLELIST)
+	{
+		RenderData& renderData = info.renderData;
+
+		//IDirect3DVertexBuffer9  *lpVB;
+		//UINT offset, stride;
+		//device->lpVtbl->GetStreamSource(device, renderData.streamNumber, 
+		//	&lpVB, &offset, &stride);
+
+		// レンダリング開始
+		if (renderData.pIndexData && renderData.pStreamData && renderData.pos_xyz)
+		{
+			// テクスチャ情報取得
+			TextureParameter textureParameter;
+			getTextureParameter(textureParameter, renderData);
+
+			// テクスチャをメモリに保存
+			if (textureParameter.texture)
+			{
+				if (!textureParameter.textureName.empty())
+				{
+					writeTextureToMemory(textureParameter.textureName, textureParameter.texture, true, renderData);
+				}
+				else
+				{
+					writeTextureToMemory(textureParameter.textureName, textureParameter.texture, false, renderData);
+				}
+			}
+
+			// 頂点バッファ・法線バッファ・テクスチャバッファをメモリに書き込み
+			if (!writeBuffersToMemory(device, renderData))
+			{
+				return;
+			}
+
+			// マテリアルをメモリに書き込み
+			if (!writeMaterialsToMemory(textureParameter, renderData))
+			{
+				return;
+			}
+
+			// インデックスバッファをメモリに書き込み
+			// 法線がない場合法線を計算
+			IDirect3DVertexBuffer9 *pStreamData = renderData.pStreamData;
+			IDirect3DIndexBuffer9 *pIndexData = renderData.pIndexData;
+
+			D3DINDEXBUFFER_DESC indexDesc;
+			if (pIndexData->lpVtbl->GetDesc(pIndexData, &indexDesc) == D3D_OK)
+			{
+				void *pIndexBuf;
+				if (pIndexData->lpVtbl->Lock(pIndexData, 0, 0, (void**)&pIndexBuf, D3DLOCK_READONLY) == D3D_OK)
+				{
+					RenderBufferMap& renderedBuffers = BridgeParameter::mutable_instance().render_buffer_map;
+					RenderedBuffer &renderedBuffer = renderedBuffers[renderData.pIndexData];
+					RenderedSurface &renderedSurface = renderedBuffer.material_map[currentMaterial]->surface;
+					renderedSurface.faces.clear();
+
+					// 変換行列をメモリに書き込み
+					writeMatrixToMemory(device, renderedBuffer);
+
+					// ライトをメモリに書き込み
+					writeLightToMemory(device, renderedBuffer);
+
+					// インデックスバッファをメモリに書き込み
+					// 法線を修正
+					for (size_t i = 0, size = info.primitiveCount * 3; i < size; i += 3)
+					{
+						UMVec3i face;
+						if (indexDesc.Format == D3DFMT_INDEX16)
+						{
+							WORD* p = (WORD*)pIndexBuf;
+							face.x = static_cast<int>((p[info.startIndex + i + 0]) + 1);
+							face.y = static_cast<int>((p[info.startIndex + i + 1]) + 1);
+							face.z = static_cast<int>((p[info.startIndex + i + 2]) + 1);
+						}
+						else
+						{
+							DWORD* p = (DWORD*)pIndexBuf;
+							face.x = static_cast<int>((p[info.startIndex + i + 0]) + 1);
+							face.y = static_cast<int>((p[info.startIndex + i + 1]) + 1);
+							face.z = static_cast<int>((p[info.startIndex + i + 2]) + 1);
+						}
+						const int vsize = renderedBuffer.vertecies.size();
+						if (face.x > vsize || face.y > vsize || face.z > vsize) {
+							continue;
+						}
+						if (face.x <= 0 || face.y <= 0 || face.z <= 0) {
+							continue;
+						}
+						renderedSurface.faces.push_back(face);
+						if (!renderData.normal)
+						{
+							if (renderedBuffer.normals.size() != vsize)
+							{
+								renderedBuffer.normals.resize(vsize);
+							}
+							D3DXVECTOR3 n;
+							D3DXVECTOR3 v0 = renderedBuffer.vertecies[face.x - 1];
+							D3DXVECTOR3 v1 = renderedBuffer.vertecies[face.y - 1];
+							D3DXVECTOR3 v2 = renderedBuffer.vertecies[face.z - 1];
+							D3DXVECTOR3 v10 = v1 - v0;
+							D3DXVECTOR3 v20 = v2 - v0;
+							::D3DXVec3Cross(&n, &v10, &v20);
+							renderedBuffer.normals[face.x - 1] += n;
+							renderedBuffer.normals[face.y - 1] += n;
+							renderedBuffer.normals[face.z - 1] += n;
+						}
+						if (!renderData.normal)
+						{
+							for (size_t i = 0, size = renderedBuffer.normals.size(); i < size; ++i)
+							{
+								D3DXVec3Normalize(
+									&renderedBuffer.normals[i],
+									&renderedBuffer.normals[i]);
+							}
+						}
+					}
+				}
+			}
+			pIndexData->lpVtbl->Unlock(pIndexData);
+		}
+		//if (renderData.pStreamData) {
+		//	renderData.pStreamData->lpVtbl->Release(renderData.pStreamData);
+		//	renderData.pStreamData = NULL;
+		//}
+	}
+}
+
+static void drawPreview(IDirect3DDevice9 *device)
+{
+	BridgeParameter& parameter = BridgeParameter::mutable_instance();
+	if (parameter.preview_tex)
+	{
+		// 頂点フォーマットの定義
+		struct  VTX
+		{
+			float       x, y, z;
+			float       rhw;
+			D3DCOLOR    color;
+			float       tu, tv;
+		};
+		D3DVIEWPORT9 viewport;
+		device->lpVtbl->GetViewport(device, &viewport);
+		const int x0 = viewport.X - 1;
+		const int y0 = viewport.Y - 1;
+		const int x1 = x0 + viewport.Width + 1;
+		const int y1 = y0 + viewport.Height + 1;
+
+		// 頂点を準備
+		VTX vertex[4] =
+		{
+			{ x0, y0, 0, 1.0f, 0x88FFFFFF, 0, 0 },    //左上
+			{ x1, y0, 0, 1.0f, 0x88FFFFFF, 1, 0 },    //右上
+			{ x0, y1, 0, 1.0f, 0x88FFFFFF, 0, 1 },    //左下
+			{ x1, y1, 0, 1.0f, 0x88FFFFFF, 1, 1 },    //右下
+		};
+		UINT numPass = 0;
+
+		device->lpVtbl->SetTexture(device, 0, reinterpret_cast<IDirect3DBaseTexture9*>(parameter.preview_tex));
+
+		device->lpVtbl->SetTextureStageState(device, 0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+		device->lpVtbl->SetTextureStageState(device, 0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+
+		device->lpVtbl->SetTextureStageState(device, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+
+		device->lpVtbl->SetTextureStageState(device, 0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+		device->lpVtbl->SetTextureStageState(device, 0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+
+		// 頂点フォーマットの設定
+		device->lpVtbl->SetFVF(device, D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+		// 描画処理
+
+		device->lpVtbl->SetRenderState(device, D3DRS_ZENABLE, D3DZB_FALSE);
+		device->lpVtbl->DrawPrimitiveUP(device, D3DPT_TRIANGLESTRIP, 2, vertex, sizeof(VTX));
+		device->lpVtbl->SetRenderState(device, D3DRS_ZENABLE, D3DZB_TRUE);
+	}
 }
 
 static int get_vertex_buffer_size()
@@ -562,6 +730,7 @@ static int get_vertex_buffer_size()
 	return BridgeParameter::instance().finish_buffer_list.size();
 }
 
+bool isGeometryUpdated = false;
 static HRESULT WINAPI present(
 	IDirect3DDevice9 *device, 
 	const RECT * pSourceRect, 
@@ -606,19 +775,26 @@ static HRESULT WINAPI present(
 		{
 			const BridgeParameter& parameter = BridgeParameter::instance();
 			int frame = static_cast<int>(time * BridgeParameter::instance().export_fps + 0.5f);
-			if (pre_buffer_size != get_vertex_buffer_size()) {
+			bool recWindow = IsRecWindow();
+			if (pre_buffer_size != get_vertex_buffer_size() || isRecWindow != IsRecWindow()) {
 				frame_for_pt = 0;
 				DisposeOptix();
 				StartOptix(frame_for_pt);
 				pre_buffer_size = get_vertex_buffer_size();
 			}
+			isRecWindow = recWindow;
 
-			bool isGeometryUpdated = false;
+			if (isGeometryUpdated) {
+				UpdateOptixGeometry();
+				frame_for_pt = 0;
+				isGeometryUpdated = false;
+			}
+
 			if (pre_frame != frame)
 			{
 				UpdateOptixGeometry();
-				isGeometryUpdated = true;
 				pre_frame = frame;
+				isGeometryUpdated = true;
 			}
 
 			D3DXMATRIX world = BridgeParameter::mutable_instance().first_noaccessory_buffer().world;
@@ -627,7 +803,7 @@ static HRESULT WINAPI present(
 			D3DXVECTOR4 fov;
 			UMGetCameraFovLH(&fov);
 
-			if (isGeometryUpdated || pre_eye != eye || pre_fov != fov || pre_world != world) {
+			if (pre_eye != eye || pre_fov != fov || pre_world != world) {
 				frame_for_pt = 0;
 				UpdateOptix(frame_for_pt);
 				pre_world = world;
@@ -638,27 +814,13 @@ static HRESULT WINAPI present(
 				UpdateOptix(frame_for_pt);
 			}
 			++frame_for_pt;
-
-			/*
-			if (frame >= parameter.start_frame && frame <= parameter.end_frame)
-			{
-				if (exportedFrames.find(frame) == exportedFrames.end())
-				{
-					process_frame = frame;
-					run_python_script();
-					exportedFrames[process_frame] = 1;
-					if (process_frame == parameter.end_frame)
-					{
-						exportedFrames.clear();
-					}
-					pre_frame = frame;
-				}
-			}*/
 		}
 		BridgeParameter::mutable_instance().finish_buffer_list.clear();
 		presentCount++;
 	}
+	drawPreview(device);
 	HRESULT res = (*original_present)(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+
 	return res;
 }
 
@@ -731,7 +893,7 @@ HRESULT WINAPI clear(
 	return res;
 }
 
-static void getTextureParameter(TextureParameter &param)
+static void getTextureParameter(TextureParameter &param, RenderData& renderData)
 {
 	TextureSamplers::iterator tit0 = renderData.textureSamplers.find(0);
 	TextureSamplers::iterator tit1 = renderData.textureSamplers.find(1);
@@ -758,7 +920,7 @@ static void getTextureParameter(TextureParameter &param)
 }
 
 // 頂点・法線バッファ・テクスチャをメモリに書き込み
-static bool writeBuffersToMemory(IDirect3DDevice9 *device)
+static bool writeBuffersToMemory(IDirect3DDevice9 *device, RenderData& renderData)
 {
 	const int currentTechnic = ExpGetCurrentTechnic();
 	const int currentMaterial = ExpGetCurrentMaterial();
@@ -767,8 +929,8 @@ static bool writeBuffersToMemory(IDirect3DDevice9 *device)
 	BYTE *pVertexBuf;
 	IDirect3DVertexBuffer9 *pStreamData = renderData.pStreamData;
 
-	VertexBufferList& finishBuffers = BridgeParameter::mutable_instance().finish_buffer_list;
-	if (std::find(finishBuffers.begin(), finishBuffers.end(), pStreamData) == finishBuffers.end())
+	IndexBufferList& finishBuffers = BridgeParameter::mutable_instance().finish_buffer_list;
+	if (std::find(finishBuffers.begin(), finishBuffers.end(), renderData.pIndexData) == finishBuffers.end())
 	{
 		VertexBuffers::iterator vit = renderData.vertexBuffers.find(pStreamData);
 		if(vit != renderData.vertexBuffers.end())
@@ -886,14 +1048,14 @@ static bool writeBuffersToMemory(IDirect3DDevice9 *device)
 			pStreamData->lpVtbl->Unlock(pStreamData);
 
 			// メモリに保存
-			finishBuffers.push_back(pStreamData);
-			renderedBuffers[pStreamData] = renderedBuffer;
+			finishBuffers.push_back(renderData.pIndexData);
+			renderedBuffers[renderData.pIndexData] = renderedBuffer;
 		}
 	}
 	return true;
 }
 
-static bool writeMaterialsToMemory(TextureParameter & textureParameter)
+static bool writeMaterialsToMemory(TextureParameter & textureParameter, RenderData& renderData)
 {
 	const int currentTechnic = ExpGetCurrentTechnic();
 	const int currentMaterial = ExpGetCurrentMaterial();
@@ -901,7 +1063,7 @@ static bool writeMaterialsToMemory(TextureParameter & textureParameter)
 
 	IDirect3DVertexBuffer9 *pStreamData = renderData.pStreamData;
 	RenderBufferMap& renderedBuffers = BridgeParameter::mutable_instance().render_buffer_map;
-	if (renderedBuffers.find(pStreamData) == renderedBuffers.end())
+	if (renderedBuffers.find(renderData.pIndexData) == renderedBuffers.end())
 	{
 		return false;
 	}
@@ -1021,7 +1183,7 @@ static bool writeMaterialsToMemory(TextureParameter & textureParameter)
 			}
 		}
 
-		RenderedBuffer &renderedBuffer = renderedBuffers[pStreamData];
+		RenderedBuffer &renderedBuffer = renderedBuffers[renderData.pIndexData];
 		if (renderedBuffer.isAccessory)
 		{
 			D3DMATERIAL9 accessoryMat = ExpGetAcsMaterial(renderedBuffer.accessory, currentMaterial);
@@ -1044,12 +1206,12 @@ static bool writeMaterialsToMemory(TextureParameter & textureParameter)
 	else
 	{
 		std::map<int, RenderedMaterial*>& materialMap = renderedMaterials[currentObject];
-		renderedBuffers[pStreamData].materials.push_back(materialMap[currentMaterial]);
-		renderedBuffers[pStreamData].material_map[currentMaterial] = materialMap[currentMaterial];
+		renderedBuffers[renderData.pIndexData].materials.push_back(materialMap[currentMaterial]);
+		renderedBuffers[renderData.pIndexData].material_map[currentMaterial] = materialMap[currentMaterial];
 		renderedMaterials[currentObject][currentMaterial] = materialMap[currentMaterial];
 	}
 
-	if (renderedBuffers[pStreamData].materials.size() > 0) 
+	if (renderedBuffers[renderData.pIndexData].materials.size() > 0)
 	{
 		return true;
 	}
@@ -1112,133 +1274,17 @@ static HRESULT WINAPI drawIndexedPrimitive(
 	UINT startIndex, 
 	UINT primitiveCount)
 {
-	const int currentMaterial = ExpGetCurrentMaterial();
-	const int currentObject = ExpGetCurrentObject();
+	PrimitiveInfo info;
+	info.type = type;
+	info.baseVertexIndex = baseVertexIndex;
+	info.minIndex = minIndex;
+	info.numVertices = numVertices;
+	info.startIndex = startIndex;
+	info.primitiveCount = primitiveCount;
+	info.renderData = renderData;
+	updatePrimitive(device, info);
 
-	const bool validCallSetting = IsValidCallSetting();
-	const bool validFrame = IsValidFrame();
-	const bool validTechniq = IsValidTechniq();
-	const bool validBuffer = (!BridgeParameter::instance().is_exporting_without_mesh);
-
-	if (validBuffer && validCallSetting && validFrame && validTechniq && type == D3DPT_TRIANGLELIST)
-	{
-		// レンダリング開始
-		if (renderData.pIndexData && renderData.pStreamData && renderData.pos_xyz)
-		{
-			// テクスチャ情報取得
-			TextureParameter textureParameter;
-			getTextureParameter(textureParameter);
-
-			// テクスチャをメモリに保存
-			if (textureParameter.texture)
-			{
-				if (!textureParameter.textureName.empty())
-				{
-					writeTextureToMemory(textureParameter.textureName, textureParameter.texture, true);
-				}
-				else
-				{
-					writeTextureToMemory(textureParameter.textureName, textureParameter.texture, false);
-				}
-			}
-
-			// 頂点バッファ・法線バッファ・テクスチャバッファをメモリに書き込み
-			if (!writeBuffersToMemory(device))
-			{
-				return (*original_draw_indexed_primitive)(device, type, baseVertexIndex, minIndex, numVertices, startIndex, primitiveCount);
-			}
-			
-			// マテリアルをメモリに書き込み
-			if (!writeMaterialsToMemory(textureParameter))
-			{
-				return  (*original_draw_indexed_primitive)(device, type, baseVertexIndex, minIndex, numVertices, startIndex, primitiveCount);
-			}
-
-			// インデックスバッファをメモリに書き込み
-			// 法線がない場合法線を計算
-			IDirect3DVertexBuffer9 *pStreamData = renderData.pStreamData;
-			IDirect3DIndexBuffer9 *pIndexData = renderData.pIndexData;
-
-			D3DINDEXBUFFER_DESC indexDesc;
-			if (pIndexData->lpVtbl->GetDesc(pIndexData, &indexDesc) == D3D_OK)
-			{
-				void *pIndexBuf;
-				if (pIndexData->lpVtbl->Lock(pIndexData, 0, 0, (void**)&pIndexBuf, D3DLOCK_READONLY) == D3D_OK)
-				{
-					RenderBufferMap& renderedBuffers = BridgeParameter::mutable_instance().render_buffer_map;
-					RenderedBuffer &renderedBuffer = renderedBuffers[pStreamData];
-					RenderedSurface &renderedSurface = renderedBuffer.material_map[currentMaterial]->surface;
-					renderedSurface.faces.clear();
-
-					// 変換行列をメモリに書き込み
-					writeMatrixToMemory(device, renderedBuffer);
-
-					// ライトをメモリに書き込み
-					writeLightToMemory(device, renderedBuffer);
-
-					// インデックスバッファをメモリに書き込み
-					// 法線を修正
-					for (size_t i = 0, size = primitiveCount * 3; i < size; i += 3)
-					{
-						UMVec3i face;
-						if (indexDesc.Format == D3DFMT_INDEX16)
-						{
-							WORD* p = (WORD*)pIndexBuf;
-							face.x = static_cast<int>((p[startIndex + i + 0]) + 1);
-							face.y = static_cast<int>((p[startIndex + i + 1]) + 1);
-							face.z = static_cast<int>((p[startIndex + i + 2]) + 1);
-						}
-						else
-						{
-							DWORD* p = (DWORD*)pIndexBuf;
-							face.x = static_cast<int>((p[startIndex + i + 0]) + 1);
-							face.y = static_cast<int>((p[startIndex + i + 1]) + 1);
-							face.z = static_cast<int>((p[startIndex + i + 2]) + 1);
-						}
-						const int vsize = renderedBuffer.vertecies.size();
-						if (face.x > vsize || face.y > vsize || face.z > vsize) {
-							continue;
-						}
-						if (face.x <= 0 || face.y <= 0 || face.z <= 0) {
-							continue;
-						}
-						renderedSurface.faces.push_back(face);
-						if (!renderData.normal)
-						{
-							if (renderedBuffer.normals.size() != vsize)
-							{
-								renderedBuffer.normals.resize(vsize);
-							}
-							D3DXVECTOR3 n;
-							D3DXVECTOR3 v0 = renderedBuffer.vertecies[face.x - 1];
-							D3DXVECTOR3 v1 = renderedBuffer.vertecies[face.y - 1];
-							D3DXVECTOR3 v2 = renderedBuffer.vertecies[face.z - 1];
-							D3DXVECTOR3 v10 = v1-v0;
-							D3DXVECTOR3 v20 = v2-v0;
-							::D3DXVec3Cross(&n, &v10, &v20);
-							renderedBuffer.normals[face.x - 1] += n;
-							renderedBuffer.normals[face.y - 1] += n;
-							renderedBuffer.normals[face.z - 1] += n;
-						}
-						if (!renderData.normal)
-						{
-							for (size_t i = 0, size = renderedBuffer.normals.size(); i < size; ++i)
-							{
-								D3DXVec3Normalize(
-									&renderedBuffer.normals[i],
-									&renderedBuffer.normals[i]);
-							}
-						}
-					}
-				}
-			}
-			pIndexData->lpVtbl->Unlock(pIndexData);
-		}
-	}
-
-	
 	HRESULT res = (*original_draw_indexed_primitive)(device, type, baseVertexIndex, minIndex, numVertices, startIndex, primitiveCount);
-
 	UMSync();
 	return res;
 }
@@ -1260,10 +1306,8 @@ static HRESULT WINAPI createTexture(
 	info.wh.x = width;
 	info.wh.y = height;
 	info.format = format;
-
 	renderData.textureBuffers[*ppTexture] = info;
 
-	
 	return res;
 
 }
