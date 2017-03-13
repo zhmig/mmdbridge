@@ -772,9 +772,9 @@ static void updatePreview(optix::Buffer buffer, float gamma)
 	RTsize width, height;
 	rtBufferGetSize2D(buffer->get(), &width, &height);
 
-	void* data;
-	rtBufferMap(buffer->get(), &data);
-	if (!data) {
+	void* data = NULL;
+	RTresult res = rtBufferMap(buffer->get(), &data);
+	if (res != RT_SUCCESS || data == NULL) {
 		return;
 	}
 	std::vector<unsigned char> image_buffer(width * height * 4);
@@ -920,7 +920,9 @@ static void start_optix_export(
 	const BridgeParameter& parameter = BridgeParameter::instance();
 
 	export_directory = directory_path;
-	createContextPT(parameter.viewport_width, parameter.viewport_height);
+	if (!context) {
+		createContextPT(parameter.viewport_width, parameter.viewport_height);
+	}
 	//optix::TextureSampler sampler = context->createTextureSampler();
 	//bool result = loadEXRHDR(sampler);
 	loadGeometryPT();
@@ -974,6 +976,19 @@ static void end_optix_export()
 	}
 }
 
+void RemoveGeometry()
+{
+	for (int i = 0; i < mmd_mesh_list.size(); ++i)
+	{
+		mmd_mesh_list[i].optix_positions->destroy();
+		mmd_mesh_list[i].optix_mat_indices->destroy();
+		mmd_mesh_list[i].optix_normals->destroy();
+		mmd_mesh_list[i].optix_texcoords->destroy();
+		mmd_mesh_list[i].optix_tri_indices->destroy();
+	}
+	mmd_mesh_list.clear();
+}
+
 void DisposeOptix()
 {
 	if (context)
@@ -981,6 +996,7 @@ void DisposeOptix()
 		try
 		{
 			context->destroy();
+			mmd_mesh_list.clear();
 		}
 		catch (optix::Exception& ex)
 		{

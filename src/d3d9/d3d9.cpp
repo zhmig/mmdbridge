@@ -100,6 +100,10 @@ HRESULT(WINAPI *original_create_deviceex)(IDirect3D9Ex*, UINT, D3DDEVTYPE, HWND,
 HRESULT (WINAPI *original_begin_scene)(IDirect3DDevice9*)(NULL);
 // IDirect3DDevice9::EndScene
 HRESULT(WINAPI *original_end_scene)(IDirect3DDevice9*)(NULL);
+// IDirect3DDevice9::Release
+ULONG(WINAPI *original_release)(IDirect3D9*)(NULL);
+// IDirect3DDevice9Ex::Release
+ULONG(WINAPI *original_release_ex)(IDirect3D9Ex*)(NULL);
 // IDirect3DDevice9::SetFVF
 HRESULT (WINAPI *original_set_fvf)(IDirect3DDevice9*, DWORD);
 // IDirect3DDevice9::Clear
@@ -771,14 +775,14 @@ static HRESULT WINAPI present(
 	const bool validTechniq = IsValidTechniq();
 	if (validFrame && validCallSetting && validTechniq)
 	{
-		if (script_call_setting == 1)
+		if (script_call_setting == 1 && get_vertex_buffer_size() > 0)
 		{
 			const BridgeParameter& parameter = BridgeParameter::instance();
 			int frame = static_cast<int>(time * BridgeParameter::instance().export_fps + 0.5f);
 			bool recWindow = IsRecWindow();
 			if (pre_buffer_size != get_vertex_buffer_size() || isRecWindow != IsRecWindow()) {
 				frame_for_pt = 0;
-				DisposeOptix();
+				RemoveGeometry();
 				StartOptix(frame_for_pt);
 				pre_buffer_size = get_vertex_buffer_size();
 			}
@@ -1415,6 +1419,19 @@ static HRESULT WINAPI endStateBlock(IDirect3DDevice9 *device, IDirect3DStateBloc
 	return res;
 }
 
+//static ULONG WINAPI release(
+//	IDirect3D9 *direct3d)
+//{
+//	return (*original_release)(direct3d);
+//}
+//
+//static ULONG WINAPI releaseEx(
+//	IDirect3D9Ex *direct3d)
+//{
+//	DisposeOptix();
+//	return (*original_release_ex)(direct3d);
+//}
+
 static void hookDevice()
 {
 	if (p_device) 
@@ -1425,6 +1442,7 @@ static void hookDevice()
 		
 		p_device->lpVtbl->BeginScene = beginScene;
 		p_device->lpVtbl->EndScene = endScene;
+		//p_device->lpVtbl->Release = release;
 		//p_device->lpVtbl->Clear = clear;
 		p_device->lpVtbl->Present = present;
 		//p_device->lpVtbl->Reset = reset;
@@ -1472,7 +1490,6 @@ static void originalDevice()
 		VirtualProtect(reinterpret_cast<void *>(p_device->lpVtbl), sizeof(p_device->lpVtbl), old_protect, &old_protect);
 	}
 }
-
 static HRESULT WINAPI createDevice(
 	IDirect3D9 *direct3d,
 	UINT adapter,
@@ -1488,6 +1505,7 @@ static HRESULT WINAPI createDevice(
 	if (p_device) {
 		original_begin_scene = p_device->lpVtbl->BeginScene;
 		original_end_scene = p_device->lpVtbl->EndScene;
+		//original_release = p_device->lpVtbl->Release;
 		//original_clear = p_device->lpVtbl->Clear;
 		original_present = p_device->lpVtbl->Present;
 		//original_reset = p_device->lpVtbl->Reset;
@@ -1522,6 +1540,8 @@ static HRESULT WINAPI createDeviceEx(
 
 	if (p_device) {
 		original_begin_scene = p_device->lpVtbl->BeginScene;
+		original_end_scene = p_device->lpVtbl->EndScene;
+		//original_release = p_device->lpVtbl->Release;
 		//original_clear = p_device->lpVtbl->Clear;
 		original_present = p_device->lpVtbl->Present;
 		//original_reset = p_device->lpVtbl->Reset;
@@ -1546,12 +1566,14 @@ extern "C" {
 	IDirect3D9 * WINAPI Direct3DCreate9(UINT SDKVersion) {
 		IDirect3D9 *direct3d((*original_direct3d_create)(SDKVersion));
 		original_create_device = direct3d->lpVtbl->CreateDevice;
+		//original_release = direct3d->lpVtbl->Release;
 
 		// 書き込み属性付与
 		DWORD old_protect;
 		VirtualProtect(reinterpret_cast<void *>(direct3d->lpVtbl), sizeof(direct3d->lpVtbl), PAGE_EXECUTE_READWRITE, &old_protect);
-		
+
 		direct3d->lpVtbl->CreateDevice = createDevice;
+		//direct3d->lpVtbl->Release = release;
 
 		// 書き込み属性元に戻す
 		VirtualProtect(reinterpret_cast<void *>(direct3d->lpVtbl), sizeof(direct3d->lpVtbl), old_protect, &old_protect);
@@ -1566,6 +1588,7 @@ extern "C" {
 		if (direct3d9ex) 
 		{
 			original_create_deviceex = direct3d9ex->lpVtbl->CreateDeviceEx;
+			//original_release_ex = direct3d9ex->lpVtbl->Release;
 			if (original_create_deviceex)
 			{
 				// 書き込み属性付与
@@ -1573,6 +1596,7 @@ extern "C" {
 				VirtualProtect(reinterpret_cast<void *>(direct3d9ex->lpVtbl), sizeof(direct3d9ex->lpVtbl), PAGE_EXECUTE_READWRITE, &old_protect);
 
 				direct3d9ex->lpVtbl->CreateDeviceEx = createDeviceEx;
+				//direct3d9ex->lpVtbl->Release = releaseEx;
 
 				// 書き込み属性元に戻す
 				VirtualProtect(reinterpret_cast<void *>(direct3d9ex->lpVtbl), sizeof(direct3d9ex->lpVtbl), old_protect, &old_protect);
@@ -1636,9 +1660,9 @@ BOOL APIENTRY DllMain(HINSTANCE hinst, DWORD reason, LPVOID)
 			d3d9_initialize();
 			break;
 		case DLL_THREAD_DETACH:
-			DisposeOptix();
 			break;
 		case DLL_PROCESS_DETACH:
+			//DisposeOptix();
 			d3d9_dispose();
 			break;
 	}
