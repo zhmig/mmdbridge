@@ -297,6 +297,9 @@ extern int ParseEXRVersionFromMemory(EXRVersion *version,
 extern int ParseEXRHeaderFromFile(EXRHeader *header, const EXRVersion *version,
                                   const char *filename, const char **err);
 
+extern int ParseEXRHeaderFromFileW(EXRHeader *header, const EXRVersion *version,
+	const wchar_t *filename, const char **err);
+
 // Parse single-part OpenEXR header from a memory and initialize `EXRHeader`.
 extern int ParseEXRHeaderFromMemory(EXRHeader *header,
                                     const EXRVersion *version,
@@ -326,6 +329,9 @@ extern int ParseEXRMultipartHeaderFromMemory(EXRHeader ***headers,
 // error
 extern int LoadEXRImageFromFile(EXRImage *image, const EXRHeader *header,
                                 const char *filename, const char **err);
+
+extern int LoadEXRImageFromFileW(EXRImage *image, const EXRHeader *header,
+	const wchar_t *filename, const char **err);
 
 // Loads single-part OpenEXR image from a memory.
 // Application must setup `EXRHeader` with
@@ -10848,6 +10854,48 @@ int LoadEXRImageFromFile(EXRImage *exr_image, const EXRHeader *exr_header,
                                 err);
 }
 
+int LoadEXRImageFromFileW(EXRImage *exr_image, const EXRHeader *exr_header,
+	const wchar_t *filename, const char **err) {
+	if (exr_image == NULL) {
+		if (err) {
+			(*err) = "Invalid argument.";
+		}
+		return TINYEXR_ERROR_INVALID_ARGUMENT;
+	}
+
+#ifdef _WIN32
+	FILE *fp = NULL;
+	_wfopen_s(&fp, filename, L"rb");
+#else
+	FILE *fp = fopen(filename, "rb");
+#endif
+	if (!fp) {
+		if (err) {
+			(*err) = "Cannot read file.";
+		}
+		return TINYEXR_ERROR_CANT_OPEN_FILE;
+	}
+
+	size_t filesize;
+	// Compute size
+	fseek(fp, 0, SEEK_END);
+	filesize = static_cast<size_t>(ftell(fp));
+	fseek(fp, 0, SEEK_SET);
+
+	std::vector<unsigned char> buf(filesize);  // @todo { use mmap }
+	{
+		size_t ret;
+		ret = fread(&buf[0], 1, filesize, fp);
+		assert(ret == filesize);
+		fclose(fp);
+		(void)ret;
+	}
+
+	return LoadEXRImageFromMemory(exr_image, exr_header, &buf.at(0), filesize,
+		err);
+}
+
+
 int LoadEXRImageFromMemory(EXRImage *exr_image, const EXRHeader *exr_header,
                            const unsigned char *memory, const size_t size,
                            const char **err) {
@@ -11922,6 +11970,53 @@ int ParseEXRHeaderFromFile(EXRHeader *exr_header, const EXRVersion *exr_version,
                                   err);
 }
 
+int ParseEXRHeaderFromFileW(EXRHeader *exr_header, const EXRVersion *exr_version,
+	const wchar_t *filename, const char **err) {
+	if (exr_header == NULL || exr_version == NULL || filename == NULL) {
+		if (err) {
+			(*err) = "Invalid argument.";
+		}
+		return TINYEXR_ERROR_INVALID_ARGUMENT;
+	}
+
+#ifdef _WIN32
+	FILE *fp = NULL;
+	_wfopen_s(&fp, filename, L"rb");
+#else
+	FILE *fp = fopen(filename, "rb");
+#endif
+	if (!fp) {
+		if (err) {
+			(*err) = "Cannot read file.";
+		}
+		return TINYEXR_ERROR_CANT_OPEN_FILE;
+	}
+
+	size_t filesize;
+	// Compute size
+	fseek(fp, 0, SEEK_END);
+	filesize = static_cast<size_t>(ftell(fp));
+	fseek(fp, 0, SEEK_SET);
+
+	std::vector<unsigned char> buf(filesize);  // @todo { use mmap }
+	{
+		size_t ret;
+		ret = fread(&buf[0], 1, filesize, fp);
+		assert(ret == filesize);
+		fclose(fp);
+
+		if (ret != filesize) {
+			if (err) {
+				(*err) = "fread error.";
+			}
+			return TINYEXR_ERROR_INVALID_FILE;
+		}
+	}
+
+	return ParseEXRHeaderFromMemory(exr_header, exr_version, &buf.at(0), filesize,
+		err);
+}
+
 int ParseEXRMultipartHeaderFromMemory(EXRHeader ***exr_headers,
                                       int *num_headers,
                                       const EXRVersion *exr_version,
@@ -12137,6 +12232,42 @@ int ParseEXRVersionFromFile(EXRVersion *version, const char *filename) {
   }
 
   return ParseEXRVersionFromMemory(version, buf, tinyexr::kEXRVersionSize);
+}
+
+int ParseEXRVersionFromFileW(EXRVersion *version, const wchar_t *filename) {
+	if (filename == NULL) {
+		return TINYEXR_ERROR_INVALID_ARGUMENT;
+	}
+
+#ifdef _WIN32
+	FILE *fp = NULL;
+	_wfopen_s(&fp, filename, L"rb");
+#else
+	FILE *fp = fopen(filename, "rb");
+#endif
+	if (!fp) {
+		return TINYEXR_ERROR_CANT_OPEN_FILE;
+	}
+
+	size_t file_size;
+	// Compute size
+	fseek(fp, 0, SEEK_END);
+	file_size = static_cast<size_t>(ftell(fp));
+	fseek(fp, 0, SEEK_SET);
+
+	if (file_size < tinyexr::kEXRVersionSize) {
+		return TINYEXR_ERROR_INVALID_FILE;
+	}
+
+	unsigned char buf[tinyexr::kEXRVersionSize];
+	size_t ret = fread(&buf[0], 1, tinyexr::kEXRVersionSize, fp);
+	fclose(fp);
+
+	if (ret != tinyexr::kEXRVersionSize) {
+		return TINYEXR_ERROR_INVALID_FILE;
+	}
+
+	return ParseEXRVersionFromMemory(version, buf, tinyexr::kEXRVersionSize);
 }
 
 int LoadEXRMultipartImageFromMemory(EXRImage *exr_images,

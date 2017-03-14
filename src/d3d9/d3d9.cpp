@@ -11,6 +11,7 @@
 #include <fstream>
 #include <algorithm>
 #include <shlwapi.h>
+#include <Commdlg.h>
 
 #include <commctrl.h>
 #include <richedit.h>
@@ -70,7 +71,7 @@ static int pre_frame = 0;
 static int presentCount = 0;
 static int process_frame = -1;
 static int ui_frame = 0;
-int script_call_setting = 2; // スクリプト呼び出し設定
+int script_call_setting = 0; // スクリプト呼び出し設定
 std::map<int, int> exportedFrames;
 
 struct PrimitiveInfo
@@ -370,6 +371,10 @@ static BOOL CALLBACK enumWindowsProc(HWND hWnd,LPARAM lParam)
 	return TRUE;	//continue
 }
 
+const int MENUID_PATHTRACE = 1030;
+const int MENUID_AO = 1040;
+const int MENUID_HDRI = 1050;
+
 static void setMyMenu()
 {
 	if (g_hMenu) return;
@@ -383,15 +388,25 @@ static void setMyMenu()
 		minfo.cbSize = sizeof(MENUITEMINFO);
 		minfo.fMask = MIIM_ID | MIIM_TYPE | MIIM_SUBMENU;
 		minfo.fType = MFT_STRING;
-		minfo.dwTypeData = TEXT("MMDBridge");
+		minfo.dwTypeData = TEXT("MMDBridgeRT");
 		minfo.hSubMenu = hsubs;
 
 		InsertMenuItem(hmenu, count + 1, TRUE, &minfo);
+
 		minfo.fMask = MIIM_ID | MIIM_TYPE;
-		minfo.dwTypeData = TEXT("プラグイン設定");
-		minfo.wID = 1020;
+		minfo.dwTypeData = TEXT("パストレーシング");
+		minfo.wID = MENUID_PATHTRACE;
 		InsertMenuItem(hsubs, 1, TRUE, &minfo);
 
+		minfo.fMask = MIIM_ID | MIIM_TYPE;
+		minfo.dwTypeData = TEXT("アンビエントオクルージョン");
+		minfo.wID = MENUID_AO;
+		InsertMenuItem(hsubs, 2, TRUE, &minfo);
+
+		minfo.fMask = MIIM_ID | MIIM_TYPE;
+		minfo.dwTypeData = TEXT("HDRIテクスチャ");
+		minfo.wID = MENUID_HDRI;
+		InsertMenuItem(hsubs, 3, TRUE, &minfo);
 
 		SetMenu(g_hWnd, hmenu);
 		g_hMenu = hmenu;
@@ -399,125 +414,38 @@ static void setMyMenu()
 }
 
 LONG_PTR originalWndProc  =NULL;
-// このコード モジュールに含まれる関数の宣言を転送します:
-INT_PTR CALLBACK DialogProc(HWND, UINT, WPARAM, LPARAM);
 HINSTANCE hInstance= NULL;
-HWND pluginDialog = NULL;
 
-static LRESULT CALLBACK overrideWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
+static BOOL openHDRIFile()
 {
-	switch( msg )
+	if (g_hWnd)
 	{
-		case WM_COMMAND:
+		OPENFILENAMEW ofn;
+		wchar_t szFileName[4096] = L"";
+
+		ZeroMemory(&ofn, sizeof(ofn));
+
+		ofn.lStructSize = sizeof(ofn); // SEE NOTE BELOW
+		ofn.hwndOwner = g_hWnd;
+		ofn.lpstrFilter = TEXT("HDRI(*.hdr;*.exr)\0*.hdr;*.exr\0")
+			TEXT("すべてのファイル(*.*)\0*.*\0\0");
+
+		ofn.lpstrFile = szFileName;
+		ofn.nMaxFile = 4096;
+		ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_ALLOWMULTISELECT;
+		ofn.lpstrDefExt = L"exr";
+
+		if (GetOpenFileName(&ofn))
 		{
-			switch(LOWORD(wp))
-			{
-			case 1020: // プラグイン設定
-				if(hInstance)
-				{
-					pluginDialog = hWnd;
-					::DialogBoxA(hInstance, "IDD_DIALOG1", NULL,  DialogProc);
-				}
-				break;
-			}
+			return LoadHDRI(std::wstring(szFileName));
 		}
-		break;
-		case WM_DESTROY:
-			::DestroyWindow(pluginDialog);
-
-		break;
-	}
-
-	// サブクラスで処理しなかったメッセージは、本来のウィンドウプロシージャに処理してもらう
-	return CallWindowProc( (WNDPROC)originalWndProc, hWnd, msg, wp, lp );
-}
-
-static INT_PTR CALLBACK DialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-	const BridgeParameter& parameter = BridgeParameter::instance();
-	BridgeParameter& mutable_parameter = BridgeParameter::mutable_instance();
-	HWND hCombo1 = GetDlgItem(hWnd, IDC_COMBO1);
-	HWND hCombo2 = GetDlgItem(hWnd, IDC_COMBO2);
-	HWND hEdit1 = GetDlgItem(hWnd, IDC_EDIT1);
-	HWND hEdit2 = GetDlgItem(hWnd, IDC_EDIT2);
-	HWND hEdit5 = GetDlgItem(hWnd, IDC_EDIT5);
-	switch (msg) {
-		case WM_INITDIALOG:
-			{
-				for (size_t i = 0 ; i < parameter.python_script_name_list.size() ; i++)
-				{
-					SendMessage(hCombo1 , CB_ADDSTRING , 0 , (LPARAM)parameter.python_script_name_list[i].c_str());
-				}
-				SendMessage(hCombo2, CB_ADDSTRING, 0, (LPARAM)_T("実行する"));
-				SendMessage(hCombo2 , CB_ADDSTRING , 0 , (LPARAM)_T("実行しない"));
-				// ウインドウ生成時にはじめに表示するデータを指定
-				UINT index1 = SendMessage(hCombo1, CB_FINDSTRINGEXACT, -1, (LPARAM)parameter.python_script_name.c_str());
-				SendMessage(hCombo1, CB_SETCURSEL, index1, 0);
-				SendMessage(hCombo2, CB_SETCURSEL, script_call_setting - 1, 0);
-
-				::SetWindowTextA(hEdit1, to_string(parameter.start_frame).c_str());
-				::SetWindowTextA(hEdit2, to_string(parameter.end_frame).c_str());
-				::SetWindowTextA(hEdit5, to_string(parameter.export_fps).c_str());
-			}
-			return TRUE;
-		case WM_CLOSE:
-			EndDialog(hWnd, IDCANCEL);
-			break;
-		case WM_COMMAND:
-			switch (LOWORD(wParam))
-			{
-				case IDOK: // ボタンが押されたとき
-					{
-						UINT num1 = (UINT)SendMessage(hCombo1, CB_GETCURSEL, 0, 0);
-						UINT num2 = (UINT)SendMessage(hCombo2, CB_GETCURSEL, 0, 0);
-						if (num2 <= 2)
-						{
-							script_call_setting = num2 + 1;
-						}
-
-						char text1[32];
-						char text2[32];
-						char text5[32];
-						::GetWindowTextA(hEdit1, text1, sizeof(text1)/sizeof(text1[0]));
-						::GetWindowTextA(hEdit2, text2, sizeof(text2)/sizeof(text2[0]));
-						::GetWindowTextA(hEdit5, text5, sizeof(text5)/sizeof(text5[0]));
-						mutable_parameter.start_frame = atoi(text1);
-						mutable_parameter.end_frame = atoi(text2);
-						mutable_parameter.export_fps = atof(text5);
-						
-						if (parameter.start_frame >= parameter.end_frame)
-						{
-							mutable_parameter.end_frame = parameter.start_frame + 1;
-							::SetWindowTextA(hEdit2, to_string(parameter.end_frame).c_str());
-						}
-						EndDialog(hWnd, IDOK);
-					}
-					break;
-				case IDCANCEL:
-					EndDialog(hWnd, IDCANCEL);
-					break;
-			}
-			break;
-		return TRUE;
 	}
 	return FALSE;
 }
 
-//ウィンドウの乗っ取り
-static void overrideGLWindow()
-{
-	EnumWindows(enumWindowsProc,0);
-	setMyMenu();
-	// サブクラス化
-	if(g_hWnd && !originalWndProc){
-		originalWndProc = GetWindowLongPtr(g_hWnd,GWLP_WNDPROC);
-		SetWindowLongPtr(g_hWnd,GWLP_WNDPROC,(_LONG_PTR)overrideWndProc);
-	}
-}
-
 
 static bool IsValidCallSetting() { 
-	return (script_call_setting == 0) || (script_call_setting == 1);
+	return script_call_setting > 0;
 }
 
 static bool IsValidFrame() {
@@ -535,6 +463,103 @@ static D3DXVECTOR3 pre_eye;
 static D3DXVECTOR4 pre_fov;
 static int frame_for_pt = 0;
 static bool isRecWindow = false;
+
+static LRESULT CALLBACK overrideWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+	switch (msg)
+	{
+	case WM_COMMAND:
+	{
+		switch (LOWORD(wp))
+		{
+		case MENUID_PATHTRACE:
+			if (hInstance)
+			{
+				HMENU hmenu = GetMenu(g_hWnd);
+				UINT state = GetMenuState(hmenu, MENUID_PATHTRACE, MF_BYCOMMAND);
+				if (state & MFS_CHECKED)
+				{
+					script_call_setting &= ~1;
+					ChangeOptixRenderType(script_call_setting);
+					CheckMenuItem(hmenu, MENUID_PATHTRACE, MF_BYCOMMAND | MFS_UNCHECKED);
+				}
+				else
+				{
+					script_call_setting |= 1;
+					ChangeOptixRenderType(script_call_setting);
+					CheckMenuItem(hmenu, MENUID_PATHTRACE, MF_BYCOMMAND | MFS_CHECKED);
+				}
+				if (script_call_setting == 0) {
+					pre_buffer_size = 0;
+					DisposeOptix();
+				}
+				frame_for_pt = 0;
+			}
+			break;
+		case MENUID_AO:
+			if (hInstance)
+			{
+				HMENU hmenu = GetMenu(g_hWnd);
+				UINT state = GetMenuState(hmenu, MENUID_AO, MF_BYCOMMAND);
+				if (state & MFS_CHECKED)
+				{
+					script_call_setting &= ~2;
+					ChangeOptixRenderType(script_call_setting);
+					CheckMenuItem(hmenu, MENUID_AO, MF_BYCOMMAND | MFS_UNCHECKED);
+				}
+				else
+				{
+					script_call_setting |= 2;
+					ChangeOptixRenderType(script_call_setting);
+					CheckMenuItem(hmenu, MENUID_AO, MF_BYCOMMAND | MFS_CHECKED);
+				}
+				if (script_call_setting == 0) {
+					pre_buffer_size = 0;
+					DisposeOptix();
+				}
+				frame_for_pt = 0;
+			}
+			break;
+		case MENUID_HDRI:
+			if (hInstance)
+			{
+				HMENU hmenu = GetMenu(g_hWnd);
+				UINT state = GetMenuState(hmenu, MENUID_HDRI, MF_BYCOMMAND);
+				if (state & MFS_CHECKED)
+				{
+					EnableHDRI(false);
+					CheckMenuItem(hmenu, MENUID_HDRI, MF_BYCOMMAND | MFS_UNCHECKED);
+				}
+				else
+				{
+					if (openHDRIFile()) {
+						EnableHDRI(true);
+						CheckMenuItem(hmenu, MENUID_HDRI, MF_BYCOMMAND | MFS_CHECKED);
+					}
+				}
+				frame_for_pt = 0;
+			}
+			break;
+		}
+	}
+	break;
+	}
+
+	// サブクラスで処理しなかったメッセージは、本来のウィンドウプロシージャに処理してもらう
+	return CallWindowProc((WNDPROC)originalWndProc, hWnd, msg, wp, lp);
+}
+
+//ウィンドウの乗っ取り
+static void overrideGLWindow()
+{
+	EnumWindows(enumWindowsProc, 0);
+	setMyMenu();
+	// サブクラス化
+	if (g_hWnd && !originalWndProc){
+		originalWndProc = GetWindowLongPtr(g_hWnd, GWLP_WNDPROC);
+		SetWindowLongPtr(g_hWnd, GWLP_WNDPROC, (_LONG_PTR)overrideWndProc);
+	}
+}
 
 static bool IsValidTechniq() {
 	const int technic = ExpGetCurrentTechnic();
@@ -702,10 +727,10 @@ static void drawPreview(IDirect3DDevice9 *device)
 		// 頂点を準備
 		VTX vertex[4] =
 		{
-			{ x0, y0, 0, 1.0f, 0x88FFFFFF, 0, 0 },    //左上
-			{ x1, y0, 0, 1.0f, 0x88FFFFFF, 1, 0 },    //右上
-			{ x0, y1, 0, 1.0f, 0x88FFFFFF, 0, 1 },    //左下
-			{ x1, y1, 0, 1.0f, 0x88FFFFFF, 1, 1 },    //右下
+			{ x0, y0, 0, 1.0f, 0xFFFFFFFF, 0, 0 },    //左上
+			{ x1, y0, 0, 1.0f, 0xFFFFFFFF, 1, 0 },    //右上
+			{ x0, y1, 0, 1.0f, 0xFFFFFFFF, 0, 1 },    //左下
+			{ x1, y1, 0, 1.0f, 0xFFFFFFFF, 1, 1 },    //右下
 		};
 		UINT numPass = 0;
 
@@ -734,6 +759,19 @@ static int get_vertex_buffer_size()
 	return BridgeParameter::instance().finish_buffer_list.size();
 }
 
+static void remakePreviewTex(IDirect3DDevice9 *device)
+{
+	BridgeParameter& parameter = BridgeParameter::mutable_instance();
+	if (parameter.preview_tex)
+	{
+		parameter.preview_tex->lpVtbl->Release(parameter.preview_tex);
+		parameter.preview_tex = NULL;
+	}
+
+	D3DXCreateTexture(device, parameter.viewport_width, parameter.viewport_height, 0
+		, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &parameter.preview_tex);
+}
+
 bool isGeometryUpdated = false;
 static HRESULT WINAPI present(
 	IDirect3DDevice9 *device, 
@@ -751,21 +789,14 @@ static HRESULT WINAPI present(
 	}
 
 	BridgeParameter& parameter = BridgeParameter::mutable_instance();
+
 	D3DVIEWPORT9 viewport;
 	device->lpVtbl->GetViewport(device, &viewport);
 	if (parameter.viewport_width != viewport.Width || parameter.viewport_height != viewport.Height)
 	{
 		parameter.viewport_width = viewport.Width;
 		parameter.viewport_height = viewport.Height;
-
-		if (parameter.preview_tex)
-		{
-			parameter.preview_tex->lpVtbl->Release(parameter.preview_tex);
-			parameter.preview_tex = NULL;
-		}
-
-		D3DXCreateTexture(device, parameter.viewport_width, parameter.viewport_height, 0
-			, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &parameter.preview_tex);
+		remakePreviewTex(device);
 	}
 
 	BridgeParameter::mutable_instance().is_exporting_without_mesh = false;
@@ -775,15 +806,18 @@ static HRESULT WINAPI present(
 	const bool validTechniq = IsValidTechniq();
 	if (validFrame && validCallSetting && validTechniq)
 	{
-		if (script_call_setting == 1 && get_vertex_buffer_size() > 0)
+		if (script_call_setting > 0 && get_vertex_buffer_size() > 0)
 		{
 			const BridgeParameter& parameter = BridgeParameter::instance();
 			int frame = static_cast<int>(time * BridgeParameter::instance().export_fps + 0.5f);
 			bool recWindow = IsRecWindow();
 			if (pre_buffer_size != get_vertex_buffer_size() || isRecWindow != IsRecWindow()) {
+				if (!parameter.preview_tex) {
+					remakePreviewTex(device);
+				}
 				frame_for_pt = 0;
 				RemoveGeometry();
-				StartOptix(frame_for_pt);
+				StartOptix(script_call_setting, frame_for_pt);
 				pre_buffer_size = get_vertex_buffer_size();
 			}
 			isRecWindow = recWindow;
@@ -839,7 +873,7 @@ static HRESULT WINAPI setFVF(IDirect3DDevice9 *device, DWORD fvf)
 {
 	HRESULT res = (*original_set_fvf)(device, fvf);
 
-	if (script_call_setting != 2)
+	if (script_call_setting > 0)
 	{
 		renderData.fvf = fvf;
 		DWORD pos = (fvf & D3DFVF_POSITION_MASK);

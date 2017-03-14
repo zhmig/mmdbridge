@@ -197,7 +197,7 @@
       <ResourceOutputFileName>%(Filename).res</ResourceOutputFileName>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>MMDExport.lib;shlwapi.lib;d3dx9_43.lib;winmm.lib;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\lib64\optix.1.lib;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\lib64\optixu.1.lib;optix.1.lib;optix_prime.1.lib;optixu.1.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>MMDExport.lib;shlwapi.lib;d3dx9_43.lib;winmm.lib;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\lib64\optix.1.lib;C:\ProgramData\NVIDIA Corporation\OptiX SDK 4.0.2\lib64\optixu.1.lib;optix.1.lib;optix_prime.1.lib;optixu.1.lib;Comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <OutputFile>$(OutDir)$(ProjectName)_.dll</OutputFile>
       <AdditionalLibraryDirectories>C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)\Lib\x64;$(SolutionDir)/libs/mmd/$(Platform)/;$(SolutionDir)/Release/$(Platform)/;$(SolutionDir)/src/d3dx9_32;$(SolutionDir)libs/optix/$(Platform)/$(Configuration)/;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <ModuleDefinitionFile>$(SolutionDir)/src/$(ProjectName)/hook.def</ModuleDefinitionFile>

@@ -56,6 +56,10 @@ namespace
 	Program        pgram_intersection = 0;
 	Program        pgram_bounding_box = 0;
 	optix::Aabb    aabb;
+	BOOL is_hdri = FALSE;
+	std::wstring hdri_path;
+
+	std::vector<optix::Material> optix_materials;
 
 	std::vector< MMDMesh > mmd_mesh_list;
 
@@ -161,6 +165,88 @@ void createMaterialProgramsPT(
 		any_hit = context->createProgramFromPTXFile(path, "shadow");
 }
 
+static BOOL loadEXRHDR(TextureSampler& sampler, const std::wstring& input)
+{
+	sampler->setWrapMode(0, RT_WRAP_REPEAT);
+	sampler->setWrapMode(1, RT_WRAP_REPEAT);
+	sampler->setWrapMode(2, RT_WRAP_REPEAT);
+	sampler->setIndexingMode(RT_TEXTURE_INDEX_NORMALIZED_COORDINATES);
+	sampler->setReadMode(RT_TEXTURE_READ_NORMALIZED_FLOAT);
+
+	// 1. Read EXR version.
+	EXRVersion exr_version;
+	int ret = ParseEXRVersionFromFileW(&exr_version, input.c_str());
+	if (ret != 0) {
+		return FALSE;
+	}
+
+	if (exr_version.multipart) {
+		// must be multipart flag is false.
+		return FALSE;
+	}
+
+	// 2. Read EXR header
+	EXRHeader exr_header;
+	InitEXRHeader(&exr_header);
+
+	const char* err;
+	ret = ParseEXRHeaderFromFileW(&exr_header, &exr_version, input.c_str(), &err);
+	if (ret != 0) {
+		//fprintf(stderr, "Parse EXR err: %s\n", err);
+		return FALSE;
+	}
+	if (exr_header.num_channels != 3 && exr_header.num_channels != 4) {
+		return FALSE;
+	}
+
+	// Read HALF channel as FLOAT.
+	for (int i = 0; i < exr_header.num_channels; i++) {
+		if (exr_header.pixel_types[i] == TINYEXR_PIXELTYPE_HALF) {
+			exr_header.requested_pixel_types[i] = TINYEXR_PIXELTYPE_FLOAT;
+		}
+	}
+
+	EXRImage exr_image;
+	InitEXRImage(&exr_image);
+
+	ret = LoadEXRImageFromFileW(&exr_image, &exr_header, input.c_str(), &err);
+	if (ret != 0) {
+		//fprintf(stderr, "Load EXR err: %s\n", err);
+		return FALSE;
+	}
+
+	optix::Buffer buffer = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT4, exr_image.width, exr_image.height);
+	float* buffer_data = static_cast<float*>(buffer->map());
+	if (exr_image.num_channels == 4) {
+		float* a = reinterpret_cast<float*>(exr_image.images[0]);
+		float* b = reinterpret_cast<float*>(exr_image.images[1]);
+		float* g = reinterpret_cast<float*>(exr_image.images[2]);
+		float* r = reinterpret_cast<float*>(exr_image.images[3]);
+		for (int y = 0; y < exr_image.height; ++y)
+		{
+			for (int x = 0; x < exr_image.width; ++x)
+			{
+				const int srcpos = (y * exr_image.width + x);
+				const int dstpos = ((exr_image.height - y - 1) * exr_image.width + x);
+				buffer_data[dstpos * 4 + 0] = b[srcpos]; // b
+				buffer_data[dstpos * 4 + 1] = g[srcpos]; // g
+				buffer_data[dstpos * 4 + 2] = r[srcpos]; // r
+				buffer_data[dstpos * 4 + 3] = a[srcpos]; // a
+			}
+		}
+	}
+	buffer->unmap();
+
+	sampler->setBuffer(buffer);
+	sampler->setFilteringModes(RT_FILTER_LINEAR, RT_FILTER_LINEAR, RT_FILTER_NONE);
+
+	context["envmap"]->setTextureSampler(sampler);
+	//updatePreview(buffer->get());
+
+	FreeEXRImage(&exr_image);
+	return TRUE;
+}
+
 static TextureSampler loadTexture(IDirect3DTexture9* texture, const float3& default_color)
 {
 	optix::TextureSampler sampler = context->createTextureSampler();
@@ -256,6 +342,27 @@ optix::Material createOptiXMaterial(
 	return mat;
 }
 
+static void changeRenderType(int renderType)
+{
+	if (context) {
+		if (renderType == 1)
+		{
+			// only pathtrace
+			context["render_type"]->setUint(1);
+		}
+		else if (renderType == 2)
+		{
+			// only ao
+			context["render_type"]->setUint(2);
+		}
+		else if (renderType == 3)
+		{
+			// pathtrace + ao
+			context["render_type"]->setUint(3);
+		}
+	}
+}
+
 static void createContext(int width, int height)
 {
 	// Set up context
@@ -308,7 +415,12 @@ static void createContextPT(int width, int height)
 	std::string ptx_path = ptxPath();
 	context->setRayGenerationProgram(0, context->createProgramFromPTXFile(ptx_path, "pathtrace_camera"));
 	context->setExceptionProgram(0, context->createProgramFromPTXFile(ptx_path, "exception"));
-	context->setMissProgram(0, context->createProgramFromPTXFile(ptx_path, "miss"));
+	if (is_hdri) {
+		context->setMissProgram(0, context->createProgramFromPTXFile(ptx_path, "miss"));
+	}
+	else {
+		context->setMissProgram(0, context->createProgramFromPTXFile(ptx_path, "miss"));
+	}
 
 	// Random seed buffer
 	Buffer seed_buffer = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_UNSIGNED_INT, width, height);
@@ -322,6 +434,11 @@ static void createContextPT(int width, int height)
 	context["sqrt_num_samples"]->setUint(2);
 	context["bad_color"]->setFloat(1000000.0f, 0.0f, 1000000.0f); // Super magenta to make sure it doesn't get averaged out in the progressive rendering.
 	context["bg_color"]->setFloat(make_float3(0.85f));
+
+	if (is_hdri && !hdri_path.empty()) {
+		optix::TextureSampler sampler = context->createTextureSampler();
+		loadEXRHDR(sampler, hdri_path);
+	}
 }
 
 static void resize(int width, int height)
@@ -506,7 +623,7 @@ static GeometryInstance createMMDMesh(MMDMesh& mmd_mesh, const RenderedBuffer & 
 	mmd_mesh.optix_positions = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT3, vertexList.size());
 	mmd_mesh.optix_normals = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT3, normalList.size());
 	mmd_mesh.optix_texcoords = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT2, uvList.empty() ? 0 : uvList.size());
-	std::vector<optix::Material> optix_materials;
+	optix_materials.clear();
 
 	optix::Program tex_closest_hit;
 	optix::Program tex_any_hit;
@@ -829,99 +946,16 @@ static void saveImage(const char* filename, RTbuffer buffer)
 	rtBufferUnmap(buffer);
 }
 
-static bool loadEXRHDR(TextureSampler& sampler)
-{
-	const char* input = "D:\\IBL\\hdrmaps_com_free_072\\hdrmaps_com_free_072_Ref.exr";
-
-	sampler->setWrapMode(0, RT_WRAP_REPEAT);
-	sampler->setWrapMode(1, RT_WRAP_REPEAT);
-	sampler->setWrapMode(2, RT_WRAP_REPEAT);
-	sampler->setIndexingMode(RT_TEXTURE_INDEX_NORMALIZED_COORDINATES);
-	sampler->setReadMode(RT_TEXTURE_READ_NORMALIZED_FLOAT);
-
-	// 1. Read EXR version.
-	EXRVersion exr_version;
-	int ret = ParseEXRVersionFromFile(&exr_version, input);
-	if (ret != 0) {
-		return false;
-	}
-
-	if (exr_version.multipart) {
-		// must be multipart flag is false.
-		return false;
-	}
-
-	// 2. Read EXR header
-	EXRHeader exr_header;
-	InitEXRHeader(&exr_header);
-
-	const char* err;
-	ret = ParseEXRHeaderFromFile(&exr_header, &exr_version, input, &err);
-	if (ret != 0) {
-		//fprintf(stderr, "Parse EXR err: %s\n", err);
-		return false;
-	}
-	if (exr_header.num_channels != 3 && exr_header.num_channels != 4) {
-		return false;
-	}
-
-	// Read HALF channel as FLOAT.
-	for (int i = 0; i < exr_header.num_channels; i++) {
-		if (exr_header.pixel_types[i] == TINYEXR_PIXELTYPE_HALF) {
-			exr_header.requested_pixel_types[i] = TINYEXR_PIXELTYPE_FLOAT;
-		}
-	}
-
-	EXRImage exr_image;
-	InitEXRImage(&exr_image);
-
-	ret = LoadEXRImageFromFile(&exr_image, &exr_header, input, &err);
-	if (ret != 0) {
-		//fprintf(stderr, "Load EXR err: %s\n", err);
-		return false;
-	}
-
-	optix::Buffer buffer = context->createBuffer(RT_BUFFER_INPUT, RT_FORMAT_FLOAT4, exr_image.width, exr_image.height);
-	float* buffer_data = static_cast<float*>(buffer->map());
-	if (exr_image.num_channels == 4) {
-		float* a = reinterpret_cast<float*>(exr_image.images[0]);
-		float* b = reinterpret_cast<float*>(exr_image.images[1]);
-		float* g = reinterpret_cast<float*>(exr_image.images[2]);
-		float* r = reinterpret_cast<float*>(exr_image.images[3]);
-		for (int y = 0; y < exr_image.height; ++y)
-		{
-			for (int x = 0; x < exr_image.width; ++x)
-			{
-				const int srcpos = (y * exr_image.width + x);
-				const int dstpos = ((exr_image.height - y - 1) * exr_image.width + x);
-				buffer_data[dstpos * 4 + 0] = b[srcpos]; // b
-				buffer_data[dstpos * 4 + 1] = g[srcpos]; // g
-				buffer_data[dstpos * 4 + 2] = r[srcpos]; // r
-				buffer_data[dstpos * 4 + 3] = a[srcpos]; // a
-			}
-		}
-	}
-	buffer->unmap();
-
-	sampler->setBuffer(buffer);
-	sampler->setFilteringModes(RT_FILTER_LINEAR, RT_FILTER_LINEAR, RT_FILTER_NONE);
-
-	context["envmap"]->setTextureSampler(sampler);
-	//updatePreview(buffer->get());
-
-	FreeEXRImage(&exr_image);
-	return true;
-}
-
 static void start_optix_export(
-	const std::string& directory_path,
-	int export_mode)
+	int renderType,
+	int currentFrame)
 {
 	const BridgeParameter& parameter = BridgeParameter::instance();
 
-	export_directory = directory_path;
+	//export_directory = directory_path;
 	if (!context) {
 		createContextPT(parameter.viewport_width, parameter.viewport_height);
+		changeRenderType(renderType);
 	}
 	//optix::TextureSampler sampler = context->createTextureSampler();
 	//bool result = loadEXRHDR(sampler);
@@ -1003,18 +1037,55 @@ void DisposeOptix()
 			const std::string error = ex.getErrorString();
 			::MessageBoxA(NULL, (LPCSTR)error.c_str(), "Dispose Error", MB_OK);
 		}
+
+		BridgeParameter& parameter = BridgeParameter::mutable_instance();
+		if (parameter.preview_tex)
+		{
+			parameter.preview_tex->lpVtbl->Release(parameter.preview_tex);
+			parameter.preview_tex = NULL;
+		}
 		context = 0;
 	}
 }
 
-void StartOptix(int currentframe)
+void StartOptix(int renderType, int currentframe)
 {
-	start_optix_export("", currentframe);
+	start_optix_export(renderType, currentframe);
 }
 
 void UpdateOptix(int currentframe)
 {
 	execute_optix_export(currentframe);
+}
+
+void ChangeOptixRenderType(int renderType)
+{
+	changeRenderType(renderType);
+}
+
+BOOL LoadHDRI(const std::wstring& hdriPath)
+{
+	if (context) {
+		optix::TextureSampler sampler = context->createTextureSampler();
+		if (loadEXRHDR(sampler, hdriPath)) {
+			hdri_path = hdriPath;
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
+void EnableHDRI(bool enable)
+{
+	if (context) {
+		is_hdri = enable;
+		if (enable) {
+			context->setMissProgram(0, context->createProgramFromPTXFile(ptxPath(), "miss_hdri"));
+		}
+		else {
+			context->setMissProgram(0, context->createProgramFromPTXFile(ptxPath(), "miss"));
+		}
+	}
 }
 
 void UpdateOptixGeometry()
