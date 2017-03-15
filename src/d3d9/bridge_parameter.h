@@ -67,6 +67,7 @@ public:
 	bool is_exporting_without_mesh;
 
 	LPDIRECT3DTEXTURE9 preview_tex;
+	bool blend_preview;
 
 private:
 	BridgeParameter() :
@@ -80,7 +81,8 @@ private:
 		, is_exporting_without_mesh(false)
 		, preview_tex(0)
 		, viewport_width(0)
-		, viewport_height(0) {}
+		, viewport_height(0)
+		, blend_preview(false) {}
 	
 	static BridgeParameter parameter;
 };

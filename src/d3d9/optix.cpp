@@ -333,11 +333,16 @@ optix::Material createOptiXMaterial(
 		material->specular.y,
 		material->specular.x
 	};
+	const float ambient[] = {
+		material->ambient.z,
+		material->ambient.y,
+		material->ambient.x
+	};
 	mat["Kd"]->set3fv(diffuse);
 	mat["Ks"]->set3fv(specular);
 	//mat["Kr"]->set3fv(mat_params.Kr);
-	//mat["Ka"]->set3fv(mat_params.Ka);
-	mat["phong_exp"]->setFloat(material->power);
+	//mat["Ka"]->set3fv(ambient);
+	//mat["phong_exp"]->setFloat(material->power);
 
 	return mat;
 }

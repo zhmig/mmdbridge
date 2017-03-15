@@ -125,6 +125,9 @@ HRESULT (WINAPI *original_end_state_block)(IDirect3DDevice9*, IDirect3DStateBloc
 // IDirect3DDevice9::DrawIndexedPrimitive
 HRESULT (WINAPI *original_draw_indexed_primitive)(IDirect3DDevice9*, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT)(NULL);
 
+// IDirect3DDevice9::DrawPrimitive
+HRESULT(WINAPI *original_draw_primitive)(IDirect3DDevice9*, D3DPRIMITIVETYPE, UINT, UINT)(NULL);
+
 // IDirect3DDevice9::SetStreamSource
 HRESULT (WINAPI *original_set_stream_source)(IDirect3DDevice9*, UINT, IDirect3DVertexBuffer9*, UINT, UINT)(NULL);
 
@@ -374,6 +377,7 @@ static BOOL CALLBACK enumWindowsProc(HWND hWnd,LPARAM lParam)
 const int MENUID_PATHTRACE = 1030;
 const int MENUID_AO = 1040;
 const int MENUID_HDRI = 1050;
+const int MENUID_BLEND_PREVIEW = 1060;
 
 static void setMyMenu()
 {
@@ -404,9 +408,14 @@ static void setMyMenu()
 		InsertMenuItem(hsubs, 2, TRUE, &minfo);
 
 		minfo.fMask = MIIM_ID | MIIM_TYPE;
+		minfo.dwTypeData = TEXT("MMDビューを重ねて表示");
+		minfo.wID = MENUID_BLEND_PREVIEW;
+		InsertMenuItem(hsubs, 3, TRUE, &minfo);
+
+		minfo.fMask = MIIM_ID | MIIM_TYPE;
 		minfo.dwTypeData = TEXT("HDRIテクスチャ");
 		minfo.wID = MENUID_HDRI;
-		InsertMenuItem(hsubs, 3, TRUE, &minfo);
+		InsertMenuItem(hsubs, 4, TRUE, &minfo);
 
 		SetMenu(g_hWnd, hmenu);
 		g_hMenu = hmenu;
@@ -427,7 +436,7 @@ static BOOL openHDRIFile()
 
 		ofn.lStructSize = sizeof(ofn); // SEE NOTE BELOW
 		ofn.hwndOwner = g_hWnd;
-		ofn.lpstrFilter = TEXT("HDRI(*.hdr;*.exr)\0*.hdr;*.exr\0")
+		ofn.lpstrFilter = TEXT("HDRI(*.exr)\0**.exr\0")
 			TEXT("すべてのファイル(*.*)\0*.*\0\0");
 
 		ofn.lpstrFile = szFileName;
@@ -518,6 +527,24 @@ static LRESULT CALLBACK overrideWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM l
 					DisposeOptix();
 				}
 				frame_for_pt = 0;
+			}
+			break;
+		case MENUID_BLEND_PREVIEW:
+			if (hInstance)
+			{
+				HMENU hmenu = GetMenu(g_hWnd);
+				BridgeParameter& parameter = BridgeParameter::mutable_instance();
+				UINT state = GetMenuState(hmenu, MENUID_BLEND_PREVIEW, MF_BYCOMMAND);
+				if (state & MFS_CHECKED)
+				{
+					parameter.blend_preview = false;
+					CheckMenuItem(hmenu, MENUID_BLEND_PREVIEW, MF_BYCOMMAND | MFS_UNCHECKED);
+				}
+				else
+				{
+					parameter.blend_preview = true;
+					CheckMenuItem(hmenu, MENUID_BLEND_PREVIEW, MF_BYCOMMAND | MFS_CHECKED);
+				}
 			}
 			break;
 		case MENUID_HDRI:
@@ -724,13 +751,18 @@ static void drawPreview(IDirect3DDevice9 *device)
 		const int x1 = x0 + viewport.Width + 1;
 		const int y1 = y0 + viewport.Height + 1;
 
+		int color = 0xFFFFFFFF;
+		if (parameter.blend_preview) {
+			color = 0x77FFFFFF;
+		}
+
 		// 頂点を準備
 		VTX vertex[4] =
 		{
-			{ x0, y0, 0, 1.0f, 0xFFFFFFFF, 0, 0 },    //左上
-			{ x1, y0, 0, 1.0f, 0xFFFFFFFF, 1, 0 },    //右上
-			{ x0, y1, 0, 1.0f, 0xFFFFFFFF, 0, 1 },    //左下
-			{ x1, y1, 0, 1.0f, 0xFFFFFFFF, 1, 1 },    //右下
+			{ x0, y0, 0, 1.0f, color, 0, 0 },    //左上
+			{ x1, y0, 0, 1.0f, color, 1, 0 },    //右上
+			{ x0, y1, 0, 1.0f, color, 0, 1 },    //左下
+			{ x1, y1, 0, 1.0f, color, 1, 1 },    //右下
 		};
 		UINT numPass = 0;
 
@@ -1327,6 +1359,18 @@ static HRESULT WINAPI drawIndexedPrimitive(
 	return res;
 }
 
+static HRESULT WINAPI drawPrimitive(
+	IDirect3DDevice9 *device, 
+	D3DPRIMITIVETYPE primitiveType, 
+	UINT startVertex,
+	UINT primitiveCount)
+{
+	const int currentTechnic = ExpGetCurrentTechnic();
+	HRESULT res = (*original_draw_primitive)(device, primitiveType, startVertex, primitiveCount);
+	UMSync();
+	return res;
+}
+
 static HRESULT WINAPI createTexture(
 	IDirect3DDevice9* device,
 	UINT width,
@@ -1484,6 +1528,7 @@ static void hookDevice()
 		p_device->lpVtbl->EndStateBlock = endStateBlock;		
 		p_device->lpVtbl->SetFVF = setFVF;
 		p_device->lpVtbl->DrawIndexedPrimitive = drawIndexedPrimitive;
+		p_device->lpVtbl->DrawPrimitive = drawPrimitive;
 		p_device->lpVtbl->SetStreamSource = setStreamSource;
 		p_device->lpVtbl->SetIndices = setIndices;
 		p_device->lpVtbl->CreateVertexBuffer = createVertexBuffer;
@@ -1513,6 +1558,7 @@ static void originalDevice()
 		p_device->lpVtbl->EndStateBlock = original_end_state_block;		
 		p_device->lpVtbl->SetFVF = original_set_fvf;
 		p_device->lpVtbl->DrawIndexedPrimitive = original_draw_indexed_primitive;
+		p_device->lpVtbl->DrawPrimitive = original_draw_primitive;
 		p_device->lpVtbl->SetStreamSource = original_set_stream_source;
 		p_device->lpVtbl->SetIndices = original_set_indices;
 		p_device->lpVtbl->CreateVertexBuffer = original_create_vertex_buffer;
@@ -1547,6 +1593,7 @@ static HRESULT WINAPI createDevice(
 		original_end_state_block = p_device->lpVtbl->EndStateBlock;
 		original_set_fvf = p_device->lpVtbl->SetFVF;
 		original_draw_indexed_primitive = p_device->lpVtbl->DrawIndexedPrimitive;
+		original_draw_primitive = p_device->lpVtbl->DrawPrimitive;
 		original_set_stream_source = p_device->lpVtbl->SetStreamSource;
 		original_set_indices = p_device->lpVtbl->SetIndices;
 		original_create_vertex_buffer = p_device->lpVtbl->CreateVertexBuffer;
@@ -1583,6 +1630,7 @@ static HRESULT WINAPI createDeviceEx(
 		original_end_state_block = p_device->lpVtbl->EndStateBlock;
 		original_set_fvf = p_device->lpVtbl->SetFVF;
 		original_draw_indexed_primitive = p_device->lpVtbl->DrawIndexedPrimitive;
+		original_draw_primitive = p_device->lpVtbl->DrawPrimitive;
 		original_set_stream_source = p_device->lpVtbl->SetStreamSource;
 		original_set_indices = p_device->lpVtbl->SetIndices;
 		original_create_vertex_buffer = p_device->lpVtbl->CreateVertexBuffer;
